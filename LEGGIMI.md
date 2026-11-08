@@ -66,6 +66,83 @@ python analisi.py movimenti --giorni 7 --min-prezzo 5
 - **uscite**: inserzioni sparite. Vendute *oppure* ritirate dal venditore: segnale più rumoroso.
 - **nuove**: nuove inserzioni o rifornimenti. Se crescono più delle vendite, l'offerta aumenta.
 
+## Struttura dei dati
+
+### Da dove arrivano
+
+| Richiesta API | Quando | Campi letti |
+| --- | --- | --- |
+| `/categories` | ogni esecuzione | id, nome |
+| `/expansions` | ogni esecuzione | id, codice, nome |
+| `/blueprints/export` | una volta a settimana per set | id, nome, versione, espansione, categoria, scryfall_id, cardmarket_id, tcgplayer_id |
+| `/marketplace/products` | ogni giorno, 2 chiamate per set (non foil e foil) | id inserzione, stampa, prezzo, quantità, condizione, lingua, foil, CardTrader Zero, vacanza, gradata |
+
+Nome del venditore, descrizioni e immagini non vengono salvati.
+
+### Percorso
+
+```
+API CardTrader
+ ├─ catalogo (categorie, espansioni, blueprint) ──► anagrafica: categories, expansions, blueprints
+ └─ inserzioni di oggi ──► confronto con ieri ◄──► listings_current (fotografia di ieri)
+                                  │
+                                  ▼
+                            daily_stats (storico) ──► analisi.py
+```
+
+### Tabelle del database (`cardtrader.db`)
+
+| Tabella | Una riga è | Cresce? |
+| --- | --- | --- |
+| `categories` | un tipo di oggetto (carta singola, token, sigillato…) | no |
+| `expansions` | un set | di poco |
+| `blueprints` | una stampa (es. Sheoldred DMU normale) | di poco |
+| `listings_current` | un'inserzione vista nell'ultima lettura | no, viene sostituita a ogni lettura |
+| `daily_stats` | una stampa in un giorno, foil o non foil | sì, ogni giorno: è lo storico |
+| `runs` | un'esecuzione dello script | sì, una al giorno |
+
+Colonne di `daily_stats`, calcolate sulle 25 inserzioni più economiche
+(venditori in vacanza e carte gradate esclusi dai prezzi):
+
+| Colonna | Significato |
+| --- | --- |
+| `date`, `blueprint_id`, `foil` | chiave: giorno, stampa, finitura |
+| `min_price` | prezzo minimo, qualsiasi condizione e lingua |
+| `min_price_nm` | minimo Near Mint o Mint |
+| `min_price_nm_en` | minimo Near Mint inglese: il confronto più omogeneo nel tempo |
+| `median_price` | prezzo centrale delle 25 |
+| `ct0_min_price` | minimo acquistabile via CardTrader Zero |
+| `n_listings`, `total_qty` | inserzioni e copie disponibili |
+| `sold_qty_est` | copie scalate da inserzioni ancora presenti: vendite quasi certe |
+| `removed_qty_est` | copie da inserzioni sparite: vendute o ritirate |
+| `new_qty` | copie apparse: nuova offerta |
+| `prev_date` | giorno della lettura usata per il confronto (utile se un giorno è saltato) |
+
+### Perché tenere i campi "di contorno"
+
+| Campo | Serve per |
+| --- | --- |
+| `scryfall_id` | collegare EDHREC, ristampe passate e legalità nei formati |
+| `cardmarket_id`, `tcg_player_id` | confrontare con Cardmarket e il mercato americano |
+| `category_id` | separare carte singole da token, sigillati e accessori |
+| `version` | non mescolare stampa base e varianti (borderless, showcase…) |
+| id inserzione | riconoscere la stessa inserzione da un giorno all'altro e stimare le vendite |
+| condizione, lingua, foil | confrontare copie equivalenti |
+| CardTrader Zero | sapere il costo d'acquisto reale |
+| vacanza, gradata | escludere prezzi di copie non acquistabili o fuori mercato |
+
+Uno storico non registrato oggi non si recupera più; un campo inutile si ignora in fase di analisi.
+
+Per interrogare il database direttamente (es. con DB Browser for SQLite), la tabella da cui partire è
+`daily_stats`, unita a `blueprints` per avere nomi e set:
+
+```sql
+SELECT d.date, b.name, d.min_price_nm_en, d.sold_qty_est
+FROM daily_stats d JOIN blueprints b ON b.id = d.blueprint_id
+WHERE b.name = 'Sheoldred, the Apocalypse' AND d.foil = 0
+ORDER BY d.date;
+```
+
 ## Limiti da tenere a mente
 
 - L'API mostra solo le **25 inserzioni più economiche** per stampa. Le carte con centinaia di
