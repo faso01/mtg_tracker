@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- mtg_tracker: mai su GitHub ---
+cardtrader_token.txt
+*.db
+*.db-wal
+*.db-shm
+raw/
+collector.log
