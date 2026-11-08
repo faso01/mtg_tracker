@@ -35,12 +35,28 @@ def table(headers, rows):
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)))
 
 
+SINGLE = ("Magic Single Card",)
+SEALED = ("Magic Boosters", "Magic Booster Boxes", "Magic Bundles and Fat Packs",
+          "Magic Complete Sets", "Magic Tournament Prerelease Packs", "Magic Cases & Displays")
+
+
+def category_filter(args, alias="b"):
+    """Condizione SQL sulle categorie: carte singole di default."""
+    if getattr(args, "tutte", False):
+        return "1=1", ()
+    names = SEALED if getattr(args, "sigillati", False) else SINGLE
+    marks = ",".join("?" * len(names))
+    return (f"{alias}.category_id IN (SELECT id FROM categories WHERE name IN ({marks}))",
+            names)
+
+
 def cmd_carta(con, args):
+    cond, cparams = category_filter(args)
     prints = con.execute(
-        """SELECT b.id, b.name, b.version, e.name, e.code
+        f"""SELECT b.id, b.name, b.version, e.name, e.code
            FROM blueprints b LEFT JOIN expansions e ON e.id = b.expansion_id
-           WHERE b.name LIKE ? ORDER BY e.name""",
-        (f"%{args.nome}%",),
+           WHERE b.name LIKE ? AND {cond} ORDER BY e.name""",
+        (f"%{args.nome}%", *cparams),
     ).fetchall()
     if not prints:
         print("Nessuna carta trovata con quel nome.")
@@ -85,8 +101,9 @@ def cmd_carta(con, args):
 def cmd_movimenti(con, args):
     """Stampe con più vendite stimate nel periodo, con variazione del prezzo NM."""
     foil = int(args.foil)
+    cond, cparams = category_filter(args)
     rows = con.execute(
-        """
+        f"""
         WITH periodo AS (
             SELECT blueprint_id,
                    SUM(COALESCE(sold_qty_est, 0)) AS vendute,
@@ -105,11 +122,11 @@ def cmd_movimenti(con, args):
         JOIN daily_stats s1 ON s1.blueprint_id = p.blueprint_id AND s1.foil = ? AND s1.date = p.d1
         JOIN blueprints b ON b.id = p.blueprint_id
         LEFT JOIN expansions e ON e.id = b.expansion_id
-        WHERE s1.min_price_nm >= ?
+        WHERE s1.min_price_nm >= ? AND {cond}
         ORDER BY p.vendute DESC
         LIMIT ?
         """,
-        (foil, f"-{args.giorni} days", foil, foil, args.min_prezzo, args.top),
+        (foil, f"-{args.giorni} days", foil, foil, args.min_prezzo, *cparams, args.top),
     ).fetchall()
     out = []
     for name, code, vend, usc, nuove, p0, p1, qty in rows:
@@ -143,12 +160,16 @@ def main():
     c.add_argument("--id", type=int, help="id della stampa per lo storico giornaliero")
     c.add_argument("--foil", action="store_true")
     c.add_argument("--giorni", type=int, default=30)
+    c.add_argument("--sigillati", action="store_true", help="cerca tra i prodotti sigillati")
+    c.add_argument("--tutte", action="store_true", help="tutte le categorie")
 
     m = sub.add_parser("movimenti", help="carte con più vendite stimate")
     m.add_argument("--giorni", type=int, default=7)
     m.add_argument("--min-prezzo", type=float, default=5.0)
     m.add_argument("--top", type=int, default=30)
     m.add_argument("--foil", action="store_true")
+    m.add_argument("--sigillati", action="store_true", help="classifica dei prodotti sigillati")
+    m.add_argument("--tutte", action="store_true", help="tutte le categorie")
 
     sub.add_parser("stato", help="stato delle ultime raccolte")
 

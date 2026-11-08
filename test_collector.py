@@ -24,7 +24,8 @@ class FakeClient:
     def get(self, path, params=None):
         self.calls.append((path, params))
         if path == "/categories":
-            return [{"id": 1, "name": "Magic Single Card", "game_id": 1}]
+            return [{"id": 1, "name": "Magic Single Card", "game_id": 1},
+                    {"id": 2, "name": "Magic Token/Emblem", "game_id": 1}]
         if path == "/expansions":
             return [{"id": 10, "game_id": 1, "code": "dmu", "name": "Dominaria United"},
                     {"id": 99, "game_id": 5, "code": "xyz", "name": "Pokemon set"}]
@@ -34,6 +35,9 @@ class FakeClient:
                      "card_market_ids": [1], "tcg_player_id": None},
                     {"id": 200, "name": "Bulk Common", "version": None, "expansion_id": 10,
                      "category_id": 1, "scryfall_id": "def", "card_market_ids": [],
+                     "tcg_player_id": None},
+                    {"id": 300, "name": "Zombie Token", "version": None, "expansion_id": 10,
+                     "category_id": 2, "scryfall_id": "ghi", "card_market_ids": [],
                      "tcg_player_id": None}]
         if path == "/marketplace/products":
             if params["foil"] == "true":
@@ -45,8 +49,9 @@ class FakeClient:
         # Sheoldred (100): 25 inserzioni da 70€ a 94€, id 1000..1024
         base = [product(1000 + i, 100, 7000 + i * 100, qty=2) for i in range(25)]
         bulk = [product(5000, 200, 10, qty=50), product(5001, 200, 12, qty=10)]
+        token = [product(9000, 300, 5, qty=99)]
         if self.day == 0:
-            return {"100": base, "200": bulk}
+            return {"100": base, "200": bulk, "300": token}
         if self.day == 1:
             s = [dict(p) for p in base]
             s[0] = product(1000, 100, 7000, qty=1)          # 1 venduta (2 -> 1)
@@ -58,7 +63,7 @@ class FakeClient:
             # la 25esima ora è 1023 (93€) < 94€ -> 1024 ignorata (potrebbe essere scivolata fuori)
             s = sorted(s, key=lambda p: p["price"]["cents"])[:25]
             bulk2 = [product(5000, 200, 10, qty=45)]         # 5 vendute, 5001 sparita (10)
-            return {"100": s, "200": bulk2}
+            return {"100": s, "200": bulk2, "300": token}
         return {"100": [], "200": []}
 
 
@@ -115,6 +120,12 @@ def main():
                        WHERE blueprint_id=200 AND date=?""", (d2,)).fetchone()
     print("Bulk giorno 3:", r)
     assert r == (45, 0, None), r
+
+    # i token restano in catalogo ma fuori dallo storico e dallo stato corrente
+    assert con.execute("SELECT COUNT(*) FROM blueprints WHERE id=300").fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM daily_stats WHERE blueprint_id=300").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM listings_current WHERE blueprint_id=300").fetchone()[0] == 0
+    print("Token esclusi dallo storico: ok")
 
     print("\nTUTTI I TEST SUPERATI")
 

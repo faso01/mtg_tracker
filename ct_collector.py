@@ -39,6 +39,18 @@ BLUEPRINT_REFRESH_DAYS = 7
 SCRIPT_DIR = Path(__file__).resolve().parent
 NM_CONDITIONS = {"Mint", "Near Mint"}
 
+# Categorie per cui si salvano le statistiche giornaliere (il catalogo resta completo).
+# Le altre (token, playmat, dadi, bustine, album...) sono escluse dallo storico.
+TRACKED_CATEGORIES = {
+    "Magic Single Card",
+    "Magic Boosters",
+    "Magic Booster Boxes",
+    "Magic Bundles and Fat Packs",
+    "Magic Complete Sets",
+    "Magic Tournament Prerelease Packs",
+    "Magic Cases & Displays",   # dubbio: casse sigillate o espositori? togliere se è rumore
+}
+
 
 # --------------------------------------------------------------------------- API
 
@@ -286,20 +298,38 @@ def compute_flows(prev, curr):
     return sold, removed, new
 
 
-def process_expansion(client, con, expansion_id, foil, today, raw_sink=None):
+def tracked_category_ids(con):
+    """Id delle categorie da seguire, letti dalla tabella categories."""
+    rows = con.execute("SELECT id, name FROM categories").fetchall()
+    return {cid for cid, name in rows if name in TRACKED_CATEGORIES}
+
+
+def excluded_blueprints(con, expansion_id, tracked_ids):
+    """Stampe dell'espansione la cui categoria NON è seguita.
+    Una stampa non ancora in catalogo viene tenuta (meglio un dato in più che uno perso)."""
+    if tracked_ids is None:
+        return set()
+    rows = con.execute(
+        "SELECT id, category_id FROM blueprints WHERE expansion_id=?", (expansion_id,)
+    ).fetchall()
+    return {bp for bp, cat in rows if cat is not None and cat not in tracked_ids}
+
+
+def process_expansion(client, con, expansion_id, foil, today, raw_sink=None, tracked_ids=None):
     data = client.get("/marketplace/products",
                       {"expansion_id": expansion_id, "foil": "true" if foil else "false"})
     if data is None:
         return 0
     if raw_sink is not None:
         raw_sink.append({"expansion_id": expansion_id, "foil": foil, "data": data})
+    skip = excluded_blueprints(con, expansion_id, tracked_ids)
 
     # oggi
     curr_by_bp = {}
     for bp_id, products in data.items():
-        parsed = [parse_listing(p) for p in products]
-        # sicurezza: il filtro foil dovrebbe già farlo, ma escludiamo eventuali incoerenze
-        curr_by_bp[int(bp_id)] = parsed
+        if int(bp_id) in skip:
+            continue
+        curr_by_bp[int(bp_id)] = [parse_listing(p) for p in products]
 
     # ieri (o ultima lettura riuscita)
     prev_rows = con.execute(
@@ -309,6 +339,8 @@ def process_expansion(client, con, expansion_id, foil, today, raw_sink=None):
     ).fetchall()
     prev_by_bp, prev_date = {}, None
     for pid, bp, price, qty, seen in prev_rows:
+        if bp in skip:
+            continue
         prev_by_bp.setdefault(bp, {})[pid] = (price, qty)
         prev_date = seen
     has_history = bool(prev_rows) and prev_date != today
@@ -394,6 +426,7 @@ def run(client, con, args, today=None, sleep=time.sleep):
     started = datetime.now().isoformat(timespec="seconds")
 
     sync_categories(client, con)
+    tracked_ids = None if getattr(args, "all_categories", False) else tracked_category_ids(con)
     expansions = sync_expansions(client, con, today)
     if args.only:
         wanted = {c.strip().lower() for c in args.only.split(",")}
@@ -409,7 +442,8 @@ def run(client, con, args, today=None, sleep=time.sleep):
             if blueprints_due(con, e["id"], today):
                 sync_blueprints(client, con, e["id"], today)
             for foil in (False, True):
-                written += process_expansion(client, con, e["id"], foil, today, raw_sink)
+                written += process_expansion(client, con, e["id"], foil, today, raw_sink,
+                                             tracked_ids)
                 sleep(MARKETPLACE_DELAY)
             ok += 1
         except SystemExit:
@@ -445,6 +479,8 @@ def main():
     ap.add_argument("--save-raw", action="store_true",
                     help="salva anche le risposte complete compresse (occupa ~30-60 MB al giorno)")
     ap.add_argument("--raw-dir", default=str(SCRIPT_DIR / "raw"))
+    ap.add_argument("--all-categories", action="store_true",
+                    help="salva lo storico anche di token, playmat, accessori, ecc.")
     ap.add_argument("--test-token", action="store_true", help="verifica il token ed esce")
     args = ap.parse_args()
 

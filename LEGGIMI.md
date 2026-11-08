@@ -58,7 +58,19 @@ con l'ultima lettura disponibile (colonna `prev_date`).
 python analisi.py carta "Ragavan" --giorni 60
 python analisi.py carta "Sheoldred" --id 220466 --foil
 python analisi.py movimenti --giorni 7 --min-prezzo 5
+python analisi.py movimenti --sigillati          # classifica di box, bundle, booster
+python analisi.py carta "Sheoldred" --tutte      # include token, playmat, accessori
 ```
+
+Di default l'analisi mostra solo le carte singole.
+
+### Cosa finisce nello storico
+
+Il catalogo contiene tutto, ma lo storico giornaliero (`daily_stats`) viene salvato solo per
+carte singole e prodotti sigillati: Boosters, Booster Boxes, Bundles and Fat Packs,
+Complete Sets, Tournament Prerelease Packs, Cases & Displays. Token, playmat, dadi, bustine,
+deck box, album e imballaggi sono esclusi. L'elenco è in `TRACKED_CATEGORIES` all'inizio di
+`ct_collector.py`; per salvare tutto si usa `--all-categories`.
 
 ## Come leggere i numeri
 
