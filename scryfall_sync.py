@@ -142,6 +142,29 @@ def import_cards(con, cards, today):
     return n
 
 
+def pick_default_cards(listing):
+    """Trova nell'elenco di Scryfall l'elemento 'Default Cards' (per tipo o per nome)."""
+    items = listing.get("data") or []
+    for x in items:
+        if x.get("type") == BULK_TYPE or (x.get("name") or "").lower() == "default cards":
+            return x
+    names = [(x.get("type"), x.get("name")) for x in items]
+    raise RuntimeError(f"'Default Cards' non trovato nell'elenco di Scryfall: {names}")
+
+
+def file_url(info):
+    """Indirizzo del file da scaricare. Il nome del campo è cambiato nel tempo,
+    quindi si accetta qualsiasi link a un file .json dell'elemento."""
+    for key in ("download_uri", "download_url", "file_uri", "file_url"):
+        if isinstance(info.get(key), str):
+            return info[key]
+    for key, value in info.items():
+        if isinstance(value, str) and value.startswith("http") and ".json" in value \
+                and "api.scryfall.com" not in value:
+            return value
+    raise RuntimeError(f"nessun link al file nell'elemento Scryfall: {info}")
+
+
 def open_stream(retries=4):
     """Chiede a Scryfall l'indirizzo del file del giorno e lo apre in streaming."""
     import requests
@@ -151,12 +174,10 @@ def open_stream(retries=4):
             resp = requests.get(BULK_LIST_URL, headers=HEADERS, timeout=60)
             resp.raise_for_status()
             listing = resp.json()
-            items = [x for x in listing.get("data", []) if x.get("type") == BULK_TYPE]
-            if not items or not items[0].get("download_uri"):
-                raise RuntimeError(f"risposta inattesa da Scryfall: {str(listing)[:400]}")
-            info = items[0]
-            log(f"  file del {info.get('updated_at')}, {info.get('size', 0) // 1_000_000} MB")
-            r = requests.get(info["download_uri"], headers=HEADERS, stream=True, timeout=120)
+            info = pick_default_cards(listing)
+            url = file_url(info)
+            log(f"  file del {info.get('updated_at')}, {(info.get('size') or 0) // 1_000_000} MB")
+            r = requests.get(url, headers=HEADERS, stream=True, timeout=120)
             r.raise_for_status()
             r.raw.decode_content = True  # decomprime al volo se arriva compresso
             return r, info.get("updated_at")
