@@ -27,19 +27,54 @@ def scryfall_date(con):
     return con.execute("SELECT MAX(date) FROM scryfall_daily").fetchone()[0]
 
 
-def ref_join(b="b", sf="sf"):
-    """JOIN con i prezzi Scryfall di un giorno (parametro: la data)."""
-    return f"LEFT JOIN scryfall_daily {sf} ON {sf}.scryfall_id = {b}.scryfall_id AND {sf}.date = ?"
+MIN_RIF = 0.05            # riferimenti Cardmarket sotto i 5 centesimi = valore di comodo, ignorati
+
+
+def prepare_reference(con):
+    """Tabella temporanea ref_name: per ogni nome di carta, il prezzo di riferimento più alto
+    tra tutte le sue stampe (normale o foil). Serve da tetto quando la stampa non ha un
+    riferimento proprio. Le carte a doppia faccia sono indicizzate anche con la sola prima faccia."""
+    con.execute("DROP TABLE IF EXISTS temp.ref_name")
+    con.execute("CREATE TEMP TABLE ref_name (name TEXT PRIMARY KEY, ref_max REAL)")
+    sdate = scryfall_date(con)
+    if not sdate:
+        return
+    con.execute(
+        """INSERT INTO ref_name
+           SELECT name, MAX(p) FROM (
+               SELECT c.name AS name, MAX(COALESCE(s.eur, 0), COALESCE(s.eur_foil, 0)) AS p
+               FROM scryfall_cards c JOIN scryfall_daily s
+                    ON s.scryfall_id = c.scryfall_id AND s.date = ?
+               UNION ALL
+               SELECT substr(c.name, 1, instr(c.name, ' // ') - 1),
+                      MAX(COALESCE(s.eur, 0), COALESCE(s.eur_foil, 0))
+               FROM scryfall_cards c JOIN scryfall_daily s
+                    ON s.scryfall_id = c.scryfall_id AND s.date = ?
+               WHERE instr(c.name, ' // ') > 0)
+           WHERE p > ? GROUP BY name""",
+        (sdate, sdate, MIN_RIF))
+
+
+def ref_join(b="b", sf="sf", rn="rn"):
+    """JOIN con i prezzi Scryfall di un giorno (parametro: la data) e con il tetto per nome."""
+    return (f"LEFT JOIN scryfall_daily {sf} ON {sf}.scryfall_id = {b}.scryfall_id "
+            f"AND {sf}.date = ? LEFT JOIN temp.ref_name {rn} ON {rn}.name = {b}.name")
 
 
 def ref_expr(d="d", sf="sf"):
-    """Prezzo di riferimento Cardmarket della stessa finitura."""
-    return f"(CASE WHEN {d}.foil = 1 THEN {sf}.eur_foil ELSE {sf}.eur END)"
+    """Prezzo di riferimento Cardmarket della stampa, nella stessa finitura (None se inaffidabile)."""
+    raw = f"(CASE WHEN {d}.foil = 1 THEN {sf}.eur_foil ELSE {sf}.eur END)"
+    return f"(CASE WHEN {raw} > {MIN_RIF} THEN {raw} END)"
 
 
-def anomalo_expr(soglia, d="d", sf="sf"):
+def eff_ref_expr(d="d", sf="sf", rn="rn"):
+    """Riferimento usato per le anomalie: quello della stampa, altrimenti il tetto della carta."""
+    return f"COALESCE({ref_expr(d, sf)}, {rn}.ref_max)"
+
+
+def anomalo_expr(soglia, d="d", sf="sf", rn="rn"):
     """Condizione SQL: il minimo CardTrader è un prezzo segnaposto / fuori mercato."""
-    r, p = ref_expr(d, sf), f"COALESCE({d}.min_price_nm, {d}.min_price)"
+    r, p = eff_ref_expr(d, sf, rn), f"COALESCE({d}.min_price_nm, {d}.min_price)"
     return (f"({r} IS NOT NULL AND {p} > {float(soglia)} * {r} "
             f"AND {p} - {r} > {MIN_SCARTO})")
 
@@ -205,8 +240,18 @@ def cmd_panoramica(con, args):
             f"""SELECT COUNT(*) FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
                 {ref_join()} WHERE d.date=? AND d.foil=0 AND {single} AND {anom}""",
             (sdate, last, *SINGLE)).fetchone()[0]
-        print(f"\nPrezzi di riferimento Scryfall del {sdate}: {n_anom} stampe non foil escluse "
-              f"come anomale (minimo CardTrader oltre {args.soglia:g} volte il riferimento).")
+        cov = con.execute(
+            f"""SELECT SUM({ref_expr()} IS NOT NULL),
+                       SUM({ref_expr()} IS NULL AND rn.ref_max IS NOT NULL),
+                       SUM({eff_ref_expr()} IS NULL), COUNT(*)
+                FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id {ref_join()}
+                WHERE d.date=? AND d.foil=0 AND d.n_listings>0 AND {single}""",
+            (sdate, last, *SINGLE)).fetchone()
+        print(f"\nRiferimenti Scryfall del {sdate} per le {cov[3]} carte singole non foil in vendita: "
+              f"{cov[0]} con prezzo della stampa, {cov[1]} solo con il tetto della carta, "
+              f"{cov[2]} senza riferimento (non controllabili).")
+        print(f"Escluse come anomale: {n_anom} (minimo CardTrader oltre {args.soglia:g} volte il "
+              f"riferimento e di almeno {MIN_SCARTO:g} €).")
         print("Per vederle: python analisi.py anomalie")
     else:
         print("\nAttenzione: nessun prezzo Scryfall nel database, i prezzi anomali non sono "
@@ -264,12 +309,12 @@ def cmd_anomalie(con, args):
     cond, cparams = category_filter(args)
     price = "COALESCE(d.min_price_nm, d.min_price)"
     rows = con.execute(
-        f"""SELECT b.name, b.version, UPPER(e.code), d.foil, {price}, {ref_expr()},
-                   ROUND({price} / {ref_expr()}, 1), d.n_listings
+        f"""SELECT b.name, b.version, UPPER(e.code), d.foil, {price}, {ref_expr()}, rn.ref_max,
+                   ROUND({price} / {eff_ref_expr()}, 1), d.n_listings
             FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
             LEFT JOIN expansions e ON e.id=b.expansion_id {ref_join()}
             WHERE d.date=? AND {cond} AND {anomalo_expr(args.soglia)}
-            ORDER BY {price} / {ref_expr()} DESC LIMIT ?""",
+            ORDER BY {price} / {eff_ref_expr()} DESC LIMIT ?""",
         (sdate, last, *cparams, args.top)).fetchall()
     total = con.execute(
         f"""SELECT COUNT(*) FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
@@ -277,9 +322,13 @@ def cmd_anomalie(con, args):
         (sdate, last, *cparams)).fetchone()[0]
     print(f"Stampe anomale il {last} (riferimento Scryfall del {sdate}, soglia "
           f"{args.soglia:g}x e +{MIN_SCARTO:g} €): {total}. Le più lontane dal riferimento:\n")
-    table(["carta", "versione", "set", "foil", "min CT €", "rif. CM €", "volte", "inserzioni"],
-          [[n[:32], (v or "")[:16], c, "sì" if f else "", p, r, x, k]
-           for n, v, c, f, p, r, x, k in rows])
+    table(["carta", "versione", "set", "foil", "min CT €", "rif. stampa €", "tetto carta €",
+           "volte", "inserzioni"],
+          [[n[:30], (v or "")[:14], c, "sì" if f else "", p, r, m, x, k]
+           for n, v, c, f, p, r, m, x, k in rows])
+    print("\n'rif. stampa' = prezzo Cardmarket di questa stampa (vuoto se assente o sotto "
+          f"{MIN_RIF:g} €); 'tetto carta' = il più alto tra tutte le stampe della stessa carta, "
+          "usato quando manca il primo.")
 
 
 class SimpleArgs:
@@ -336,6 +385,7 @@ def main():
     args = ap.parse_args()
     con = sqlite3.connect(args.db)
     con.executescript(SCRYFALL_SCHEMA)   # crea le tabelle Scryfall vuote se mancano
+    prepare_reference(con)
     {"carta": cmd_carta, "movimenti": cmd_movimenti, "stato": cmd_stato,
      "panoramica": cmd_panoramica, "anomalie": cmd_anomalie}[args.cmd](con, args)
 

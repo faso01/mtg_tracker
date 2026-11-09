@@ -39,6 +39,12 @@ class FakeClient:
                     {"id": 400, "name": "Polymorph", "version": None, "expansion_id": 10,
                      "category_id": 1, "scryfall_id": "jkl", "card_market_ids": [],
                      "tcg_player_id": None},
+                    {"id": 500, "name": "Druid of the Cowl", "version": None, "expansion_id": 10,
+                     "category_id": 1, "scryfall_id": "w24", "card_market_ids": [],
+                     "tcg_player_id": None},
+                    {"id": 600, "name": "Seven Dwarves", "version": None, "expansion_id": 10,
+                     "category_id": 1, "scryfall_id": "sld7", "card_market_ids": [],
+                     "tcg_player_id": None},
                     {"id": 300, "name": "Zombie Token", "version": None, "expansion_id": 10,
                      "category_id": 2, "scryfall_id": "ghi", "card_market_ids": [],
                      "tcg_player_id": None}]
@@ -54,8 +60,11 @@ class FakeClient:
         bulk = [product(5000, 200, 10, qty=50), product(5001, 200, 12, qty=10)]
         token = [product(9000, 300, 5, qty=99)]
         parked = [product(9500, 400, 1817016, qty=2)]   # prezzo segnaposto
+        druid = [product(9600, 500, 1817016, qty=9)]    # segnaposto, stampa senza riferimento
+        dwarves = [product(9700, 600, 3034, qty=13)]    # prezzo vero, riferimento di comodo
         if self.day == 0:
-            return {"100": base, "200": bulk, "300": token, "400": parked}
+            return {"100": base, "200": bulk, "300": token, "400": parked,
+                    "500": druid, "600": dwarves}
         if self.day == 1:
             s = [dict(p) for p in base]
             s[0] = product(1000, 100, 7000, qty=1)          # 1 venduta (2 -> 1)
@@ -67,7 +76,8 @@ class FakeClient:
             # la 25esima ora è 1023 (93€) < 94€ -> 1024 ignorata (potrebbe essere scivolata fuori)
             s = sorted(s, key=lambda p: p["price"]["cents"])[:25]
             bulk2 = [product(5000, 200, 10, qty=45)]         # 5 vendute, 5001 sparita (10)
-            return {"100": s, "200": bulk2, "300": token, "400": parked}
+            return {"100": s, "200": bulk2, "300": token, "400": parked,
+                    "500": druid, "600": dwarves}
         return {"100": [], "200": []}
 
 
@@ -150,6 +160,14 @@ def test_scryfall_e_anomalie(con, day):
          "prices": {"eur": "0.01"}},                       # 10 volte, ma solo +0,09 euro
         {"id": "jkl", "name": "Polymorph", "set": "plst", "games": ["paper"],
          "prices": {"eur": "0.50"}},                       # segnaposto da 18.170 euro
+        {"id": "w24", "name": "Druid of the Cowl", "games": ["paper"],
+         "prices": {"eur": None}},                         # stampa senza prezzo Cardmarket
+        {"id": "dotc-old", "name": "Druid of the Cowl", "games": ["paper"],
+         "prices": {"eur": "0.30"}},                       # altra stampa: tetto 0,30
+        {"id": "sld7", "name": "Seven Dwarves", "games": ["paper"],
+         "prices": {"eur": "0.02"}},                       # riferimento di comodo
+        {"id": "dwarves-foil", "name": "Seven Dwarves", "games": ["paper"],
+         "prices": {"eur": "1.00", "eur_foil": "35.00"}},  # tetto 35
         {"id": "zzz", "name": "Solo Arena", "games": ["arena"], "digital": True,
          "prices": {}},                                    # solo digitale: ignorata
     ]
@@ -161,7 +179,7 @@ def test_scryfall_e_anomalie(con, day):
         con.executescript(sf.SCHEMA)
         with open(path, "rb") as fh:
             n = sf.import_cards(con, sf.iter_cards(fh), day)
-    assert n == 3, n
+    assert n == 7, n
     r = con.execute("SELECT eur, eur_foil, usd, edhrec_rank FROM scryfall_daily "
                     "WHERE scryfall_id='abc'").fetchone()
     assert r == (80.0, 120.0, 85.0, 150), r
@@ -169,12 +187,15 @@ def test_scryfall_e_anomalie(con, day):
                     "WHERE scryfall_id='abc'").fetchone()
     assert r == (0, "legal"), r
 
+    an.prepare_reference(con)
     anomale = {row[0] for row in con.execute(
         f"""SELECT b.id FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
             {an.ref_join()} WHERE d.date=? AND {an.anomalo_expr(an.DEFAULT_SOGLIA)}""",
         (day, day))}
     print("Anomalie trovate:", anomale)
-    assert anomale == {400}, anomale   # solo il segnaposto, non Sheoldred né la comune
+    # i due segnaposto sì (uno grazie al tetto della carta); Sheoldred, la comune da pochi
+    # centesimi e Seven Dwarves (riferimento di comodo 0,02 ignorato) no
+    assert anomale == {400, 500}, anomale
 
 
 

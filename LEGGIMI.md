@@ -87,6 +87,11 @@ Alcuni venditori mettono prezzi "parcheggio" assurdi (es. 18.170 € per una car
 centesimi). Per riconoscerli, il minimo CardTrader viene confrontato con il prezzo di
 riferimento Cardmarket preso da Scryfall: se è oltre **5 volte** il riferimento e di almeno
 **20 €**, la stampa è considerata anomala ed esclusa da `panoramica` e `movimenti`.
+
+Se la stampa non ha un riferimento proprio (promo, The List, stampe speciali) o il riferimento è
+sotto 5 centesimi (valore di comodo di Cardmarket per stampe senza vendite), si usa come tetto il
+riferimento più alto tra tutte le stampe della stessa carta. La panoramica dice quante carte hanno
+un riferimento della stampa, quante solo il tetto e quante nessuno.
 La soglia si cambia con `--soglia`, es. `--soglia 10`. Senza dati Scryfall nulla viene filtrato.
 
 ## Come leggere i numeri
