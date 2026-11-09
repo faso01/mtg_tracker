@@ -1,7 +1,9 @@
 # Raccoglitore prezzi CardTrader (Magic)
 
-Tre file:
+File principali:
 - `ct_collector.py` – da eseguire una volta al giorno: scarica le inserzioni e salva le statistiche in `cardtrader.db`
+- `scryfall_sync.py` – subito dopo: prezzi di riferimento Cardmarket, popolarità EDHREC e dati delle carte da Scryfall
+- `esegui_raccolta.bat` – lancia i due script in sequenza e scrive tutto in `collector.log` (Windows)
 - `analisi.py` – per consultare i dati raccolti
 - `test_collector.py` – verifica la logica con dati finti (non serve internet)
 
@@ -10,7 +12,7 @@ Tre file:
 Serve Python 3.9 o superiore.
 
 ```
-pip install requests
+pip install -r requirements.txt
 python test_collector.py        # deve stampare "TUTTI I TEST SUPERATI"
 ```
 
@@ -37,15 +39,20 @@ servono due letture da confrontare.
 
 ## 4. Esecuzione giornaliera
 
-L'esecuzione completa dura circa 30-40 minuti (l'API permette 1 richiesta al secondo).
-Il computer deve essere acceso a quell'ora.
+La raccolta CardTrader completa (circa 800 espansioni) dura circa 2 ore e mezza; Scryfall
+aggiunge qualche minuto. Il computer deve restare acceso per tutto il tempo.
 
-**Windows** – Utilità di pianificazione → Crea attività di base → Ogni giorno, es. ore 6:00 →
-Avvia programma: `python`, argomenti: `ct_collector.py`, "Inizia in": la cartella degli script.
+**Windows** – Utilità di pianificazione → Crea attività di base → Ogni giorno, sempre alla
+stessa ora → Avvia programma: il percorso completo di `esegui_raccolta.bat`, argomenti vuoti.
+Nelle Impostazioni dell'attività spunta "Esegui l'attività appena possibile dopo l'omissione
+di un avvio pianificato". Per seguire l'avanzamento, in PowerShell:
+`Get-Content collector.log -Wait -Tail 20`.
+
+Codice finale nel registro: 0 = tutto ok, 2 = alcune espansioni fallite, 1 = nessuna riuscita.
 
 **Mac / Linux** – `crontab -e` e aggiungi:
 ```
-0 6 * * * cd /percorso/cartella && /usr/bin/python3 ct_collector.py >> collector.log 2>&1
+0 6 * * * cd /percorso/cartella && python3 ct_collector.py >> collector.log 2>&1; python3 scryfall_sync.py >> collector.log 2>&1
 ```
 
 Se il PC non è sempre acceso, un Raspberry Pi o un piccolo server da pochi euro al mese
@@ -59,6 +66,7 @@ python analisi.py carta "Ragavan" --giorni 60
 python analisi.py carta "Sheoldred" --id 220466 --foil
 python analisi.py movimenti --giorni 7 --min-prezzo 5
 python analisi.py panoramica                     # quadro d'insieme dell'ultima raccolta
+python analisi.py anomalie                       # prezzi fuori mercato esclusi dalle analisi
 python analisi.py movimenti --sigillati          # classifica di box, bundle, booster
 python analisi.py carta "Sheoldred" --tutte      # include token, playmat, accessori
 ```
@@ -72,6 +80,14 @@ carte singole e prodotti sigillati: Boosters, Booster Boxes, Bundles and Fat Pac
 Complete Sets, Tournament Prerelease Packs, Cases & Displays. Token, playmat, dadi, bustine,
 deck box, album e imballaggi sono esclusi. L'elenco è in `TRACKED_CATEGORIES` all'inizio di
 `ct_collector.py`; per salvare tutto si usa `--all-categories`.
+
+### Prezzi anomali
+
+Alcuni venditori mettono prezzi "parcheggio" assurdi (es. 18.170 € per una carta da 50
+centesimi). Per riconoscerli, il minimo CardTrader viene confrontato con il prezzo di
+riferimento Cardmarket preso da Scryfall: se è oltre **5 volte** il riferimento e di almeno
+**20 €**, la stampa è considerata anomala ed esclusa da `panoramica` e `movimenti`.
+La soglia si cambia con `--soglia`, es. `--soglia 10`. Senza dati Scryfall nulla viene filtrato.
 
 ## Come leggere i numeri
 
@@ -101,6 +117,8 @@ API CardTrader
                                   │
                                   ▼
                             daily_stats (storico) ──► analisi.py
+                                                            ▲
+Scryfall (Default Cards) ──► scryfall_daily, scryfall_cards ┘   (collegati tramite scryfall_id)
 ```
 
 ### Tabelle del database (`cardtrader.db`)
@@ -113,6 +131,13 @@ API CardTrader
 | `listings_current` | un'inserzione vista nell'ultima lettura | no, viene sostituita a ogni lettura |
 | `daily_stats` | una stampa in un giorno, foil o non foil | sì, ogni giorno: è lo storico |
 | `runs` | un'esecuzione dello script | sì, una al giorno |
+| `scryfall_daily` | una stampa in un giorno: prezzi Cardmarket (eur, eur_foil), TCGplayer (usd, usd_foil), `edhrec_rank` | sì, ogni giorno |
+| `scryfall_cards` | una stampa: nome, set, uscita, rarità, `reserved` (Reserved List), `reprint`, legalità nei formati | di poco |
+| `scryfall_runs` | un'esecuzione di `scryfall_sync.py` | sì, una al giorno |
+
+`edhrec_rank` è la posizione della carta nella popolarità Commander (1 = la più giocata): seguita nel
+tempo è il segnale di domanda. `oracle_id` è uguale per tutte le ristampe della stessa carta e serve a
+contare quante volte è stata ristampata.
 
 Colonne di `daily_stats`, calcolate sulle 25 inserzioni più economiche
 (venditori in vacanza e carte gradate esclusi dai prezzi):
@@ -163,5 +188,7 @@ ORDER BY d.date;
   nel tempo che il numero assoluto.
 - Lingue e condizioni sono mescolate nelle 25: usa `min NM EN` per confronti coerenti.
 - I prezzi sono nella valuta del tuo account (euro).
+- I prezzi Scryfall vengono aggiornati circa una volta al giorno: vanno bene per tendenze e
+  confronti, non per il prezzo esatto del momento.
 - Il database cresce di qualche decina di MB al giorno. `--save-raw` salva anche le risposte
   complete (molto più spazio) se in futuro vuoi ricalcolare statistiche diverse.

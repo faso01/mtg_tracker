@@ -36,6 +36,9 @@ class FakeClient:
                     {"id": 200, "name": "Bulk Common", "version": None, "expansion_id": 10,
                      "category_id": 1, "scryfall_id": "def", "card_market_ids": [],
                      "tcg_player_id": None},
+                    {"id": 400, "name": "Polymorph", "version": None, "expansion_id": 10,
+                     "category_id": 1, "scryfall_id": "jkl", "card_market_ids": [],
+                     "tcg_player_id": None},
                     {"id": 300, "name": "Zombie Token", "version": None, "expansion_id": 10,
                      "category_id": 2, "scryfall_id": "ghi", "card_market_ids": [],
                      "tcg_player_id": None}]
@@ -50,8 +53,9 @@ class FakeClient:
         base = [product(1000 + i, 100, 7000 + i * 100, qty=2) for i in range(25)]
         bulk = [product(5000, 200, 10, qty=50), product(5001, 200, 12, qty=10)]
         token = [product(9000, 300, 5, qty=99)]
+        parked = [product(9500, 400, 1817016, qty=2)]   # prezzo segnaposto
         if self.day == 0:
-            return {"100": base, "200": bulk, "300": token}
+            return {"100": base, "200": bulk, "300": token, "400": parked}
         if self.day == 1:
             s = [dict(p) for p in base]
             s[0] = product(1000, 100, 7000, qty=1)          # 1 venduta (2 -> 1)
@@ -63,7 +67,7 @@ class FakeClient:
             # la 25esima ora è 1023 (93€) < 94€ -> 1024 ignorata (potrebbe essere scivolata fuori)
             s = sorted(s, key=lambda p: p["price"]["cents"])[:25]
             bulk2 = [product(5000, 200, 10, qty=45)]         # 5 vendute, 5001 sparita (10)
-            return {"100": s, "200": bulk2, "300": token}
+            return {"100": s, "200": bulk2, "300": token, "400": parked}
         return {"100": [], "200": []}
 
 
@@ -127,7 +131,52 @@ def main():
     assert con.execute("SELECT COUNT(*) FROM listings_current WHERE blueprint_id=300").fetchone()[0] == 0
     print("Token esclusi dallo storico: ok")
 
+    test_scryfall_e_anomalie(con, d1)
+
     print("\nTUTTI I TEST SUPERATI")
+
+
+def test_scryfall_e_anomalie(con, day):
+    import json, os, tempfile
+    import scryfall_sync as sf
+    import analisi as an
+
+    cards = [
+        {"id": "abc", "oracle_id": "o1", "name": "Sheoldred, the Apocalypse", "set": "dmu",
+         "games": ["paper"], "digital": False, "reserved": False, "reprint": False,
+         "prices": {"eur": "80.00", "eur_foil": "120.00", "usd": "85.00", "usd_foil": None},
+         "edhrec_rank": 150, "legalities": {"commander": "legal", "standard": "not_legal"}},
+        {"id": "def", "name": "Bulk Common", "set": "dmu", "games": ["paper"],
+         "prices": {"eur": "0.01"}},                       # 10 volte, ma solo +0,09 euro
+        {"id": "jkl", "name": "Polymorph", "set": "plst", "games": ["paper"],
+         "prices": {"eur": "0.50"}},                       # segnaposto da 18.170 euro
+        {"id": "zzz", "name": "Solo Arena", "games": ["arena"], "digital": True,
+         "prices": {}},                                    # solo digitale: ignorata
+    ]
+    # import dal file, come in uso reale (lettura in streaming con ijson)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "default-cards.json")
+        with open(path, "w") as fh:
+            json.dump(cards, fh)
+        con.executescript(sf.SCHEMA)
+        import ijson
+        with open(path, "rb") as fh:
+            n = sf.import_cards(con, ijson.items(fh, "item"), day)
+    assert n == 3, n
+    r = con.execute("SELECT eur, eur_foil, usd, edhrec_rank FROM scryfall_daily "
+                    "WHERE scryfall_id='abc'").fetchone()
+    assert r == (80.0, 120.0, 85.0, 150), r
+    r = con.execute("SELECT reserved, legal_commander FROM scryfall_cards "
+                    "WHERE scryfall_id='abc'").fetchone()
+    assert r == (0, "legal"), r
+
+    anomale = {row[0] for row in con.execute(
+        f"""SELECT b.id FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
+            {an.ref_join()} WHERE d.date=? AND {an.anomalo_expr(an.DEFAULT_SOGLIA)}""",
+        (day, day))}
+    print("Anomalie trovate:", anomale)
+    assert anomale == {400}, anomale   # solo il segnaposto, non Sheoldred né la comune
+
 
 
 if __name__ == "__main__":

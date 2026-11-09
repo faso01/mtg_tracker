@@ -8,13 +8,40 @@ Esempi:
   python analisi.py movimenti --giorni 7 --min-prezzo 5
   python analisi.py stato
   python analisi.py panoramica
+  python analisi.py anomalie
 """
 
 import argparse
 import sqlite3
 from pathlib import Path
 
+from scryfall_sync import SCHEMA as SCRYFALL_SCHEMA
+
 SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_SOGLIA = 5.0      # anomalo se il minimo CardTrader supera di 5 volte il riferimento...
+MIN_SCARTO = 20.0         # ...e di almeno 20 euro (evita falsi allarmi su carte da pochi centesimi)
+
+
+def scryfall_date(con):
+    """Ultimo giorno con prezzi Scryfall, o None se scryfall_sync.py non è mai stato lanciato."""
+    return con.execute("SELECT MAX(date) FROM scryfall_daily").fetchone()[0]
+
+
+def ref_join(b="b", sf="sf"):
+    """JOIN con i prezzi Scryfall di un giorno (parametro: la data)."""
+    return f"LEFT JOIN scryfall_daily {sf} ON {sf}.scryfall_id = {b}.scryfall_id AND {sf}.date = ?"
+
+
+def ref_expr(d="d", sf="sf"):
+    """Prezzo di riferimento Cardmarket della stessa finitura."""
+    return f"(CASE WHEN {d}.foil = 1 THEN {sf}.eur_foil ELSE {sf}.eur END)"
+
+
+def anomalo_expr(soglia, d="d", sf="sf"):
+    """Condizione SQL: il minimo CardTrader è un prezzo segnaposto / fuori mercato."""
+    r, p = ref_expr(d, sf), f"COALESCE({d}.min_price_nm, {d}.min_price)"
+    return (f"({r} IS NOT NULL AND {p} > {float(soglia)} * {r} "
+            f"AND {p} - {r} > {MIN_SCARTO})")
 
 
 def fmt(v, suffix=""):
@@ -76,11 +103,18 @@ def cmd_carta(con, args):
                WHERE blueprint_id=? AND foil=? AND date >= date('now', ?)""",
             (bp_id, foil, f"-{args.giorni} days"),
         ).fetchone()
+        ref = con.execute(
+            """SELECT CASE WHEN ? = 1 THEN sf.eur_foil ELSE sf.eur END, sf.edhrec_rank
+               FROM blueprints b JOIN scryfall_daily sf ON sf.scryfall_id = b.scryfall_id
+               WHERE b.id = ? ORDER BY sf.date DESC LIMIT 1""",
+            (foil, bp_id)).fetchone() or (None, None)
         label = f"{name}{' (' + version + ')' if version else ''}"
         summary.append([bp_id, label[:40], (code or "").upper(), *(last[1:] if last else
-                        (None, None, None)), sold[0], sold[1]])
-    table(["id", "carta", "set", "min NM €", "mediana €", "copie", "vendute", "uscite"],
-          summary)
+                        (None, None, None)), ref[0], sold[0], sold[1], ref[1]])
+    table(["id", "carta", "set", "min NM €", "mediana €", "copie", "rif. CM €",
+           "vendute", "uscite", "EDHREC"], summary)
+    print("'rif. CM €' = prezzo di riferimento Cardmarket (Scryfall); "
+          "'EDHREC' = posizione di popolarità in Commander, 1 = la più giocata.")
     print(f"\n'vendute' e 'uscite' sono la somma degli ultimi {args.giorni} giorni.")
 
     if len(prints) == 1 or args.id:
@@ -123,11 +157,13 @@ def cmd_movimenti(con, args):
         JOIN daily_stats s1 ON s1.blueprint_id = p.blueprint_id AND s1.foil = ? AND s1.date = p.d1
         JOIN blueprints b ON b.id = p.blueprint_id
         LEFT JOIN expansions e ON e.id = b.expansion_id
-        WHERE s1.min_price_nm >= ? AND {cond}
+        {ref_join()}
+        WHERE s1.min_price_nm >= ? AND {cond} AND NOT {anomalo_expr(args.soglia, d='s1')}
         ORDER BY p.vendute DESC
         LIMIT ?
         """,
-        (foil, f"-{args.giorni} days", foil, foil, args.min_prezzo, *cparams, args.top),
+        (foil, f"-{args.giorni} days", foil, foil, scryfall_date(con), args.min_prezzo,
+         *cparams, args.top),
     ).fetchall()
     out = []
     for name, code, vend, usc, nuove, p0, p1, qty in rows:
@@ -162,6 +198,19 @@ def cmd_panoramica(con, args):
     table(["categoria", "in catalogo", "in vendita non foil", "in vendita foil"], rows)
 
     single, _ = category_filter(SimpleArgs(), "b")
+    sdate = scryfall_date(con)
+    anom = anomalo_expr(args.soglia)
+    if sdate:
+        n_anom = con.execute(
+            f"""SELECT COUNT(*) FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
+                {ref_join()} WHERE d.date=? AND d.foil=0 AND {single} AND {anom}""",
+            (sdate, last, *SINGLE)).fetchone()[0]
+        print(f"\nPrezzi di riferimento Scryfall del {sdate}: {n_anom} stampe non foil escluse "
+              f"come anomale (minimo CardTrader oltre {args.soglia:g} volte il riferimento).")
+        print("Per vederle: python analisi.py anomalie")
+    else:
+        print("\nAttenzione: nessun prezzo Scryfall nel database, i prezzi anomali non sono "
+              "filtrati. Lancia python scryfall_sync.py")
     print(f"\nCarte singole non foil per fascia di prezzo (minimo Near Mint, {last})")
     bands = con.execute(
         f"""SELECT CASE
@@ -172,10 +221,10 @@ def cmd_panoramica(con, args):
                  WHEN d.min_price_nm < 100 THEN 'd) 20 - 100 euro'
                  ELSE 'e) oltre 100 euro' END AS fascia,
                COUNT(*)
-           FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
-           WHERE d.date=? AND d.foil=0 AND {single}
+           FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id {ref_join()}
+           WHERE d.date=? AND d.foil=0 AND {single} AND NOT {anom}
            GROUP BY fascia ORDER BY fascia""",
-        (last, *SINGLE),
+        (sdate, last, *SINGLE),
     ).fetchall()
     table(["fascia", "stampe"], bands)
 
@@ -184,24 +233,53 @@ def cmd_panoramica(con, args):
         f"""SELECT e.name, UPPER(e.code), COUNT(*),
                    ROUND(SUM(d.min_price_nm), 0)
             FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
-            JOIN expansions e ON e.id=b.expansion_id
-            WHERE d.date=? AND d.foil=0 AND {single}
+            JOIN expansions e ON e.id=b.expansion_id {ref_join()}
+            WHERE d.date=? AND d.foil=0 AND {single} AND NOT {anom}
             GROUP BY e.id ORDER BY COUNT(*) DESC LIMIT ?""",
-        (last, *SINGLE, args.top),
+        (sdate, last, *SINGLE, args.top),
     ).fetchall()
     table(["espansione", "set", "stampe in vendita", "somma minimi NM €"], exps)
 
     print(f"\nCarte singole non foil più care (minimo Near Mint)")
     top = con.execute(
-        f"""SELECT b.name, b.version, UPPER(e.code), d.min_price_nm, d.total_qty
+        f"""SELECT b.name, b.version, UPPER(e.code), d.min_price_nm, {ref_expr()}, d.total_qty
             FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
-            LEFT JOIN expansions e ON e.id=b.expansion_id
+            LEFT JOIN expansions e ON e.id=b.expansion_id {ref_join()}
             WHERE d.date=? AND d.foil=0 AND {single} AND d.min_price_nm IS NOT NULL
+                  AND NOT {anom}
             ORDER BY d.min_price_nm DESC LIMIT ?""",
-        (last, *SINGLE, args.top),
+        (sdate, last, *SINGLE, args.top),
     ).fetchall()
-    table(["carta", "versione", "set", "min NM €", "copie"],
-          [[n[:34], (v or "")[:18], c, p, q] for n, v, c, p, q in top])
+    table(["carta", "versione", "set", "min NM €", "rif. Cardmarket €", "copie"],
+          [[n[:34], (v or "")[:18], c, p, r, q] for n, v, c, p, r, q in top])
+
+
+def cmd_anomalie(con, args):
+    """Stampe il cui minimo CardTrader è molto sopra il riferimento Cardmarket."""
+    last = con.execute("SELECT MAX(date) FROM daily_stats").fetchone()[0]
+    sdate = scryfall_date(con)
+    if not last or not sdate:
+        print("Servono sia una raccolta CardTrader sia i prezzi Scryfall (scryfall_sync.py).")
+        return
+    cond, cparams = category_filter(args)
+    price = "COALESCE(d.min_price_nm, d.min_price)"
+    rows = con.execute(
+        f"""SELECT b.name, b.version, UPPER(e.code), d.foil, {price}, {ref_expr()},
+                   ROUND({price} / {ref_expr()}, 1), d.n_listings
+            FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
+            LEFT JOIN expansions e ON e.id=b.expansion_id {ref_join()}
+            WHERE d.date=? AND {cond} AND {anomalo_expr(args.soglia)}
+            ORDER BY {price} / {ref_expr()} DESC LIMIT ?""",
+        (sdate, last, *cparams, args.top)).fetchall()
+    total = con.execute(
+        f"""SELECT COUNT(*) FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
+            {ref_join()} WHERE d.date=? AND {cond} AND {anomalo_expr(args.soglia)}""",
+        (sdate, last, *cparams)).fetchone()[0]
+    print(f"Stampe anomale il {last} (riferimento Scryfall del {sdate}, soglia "
+          f"{args.soglia:g}x e +{MIN_SCARTO:g} €): {total}. Le più lontane dal riferimento:\n")
+    table(["carta", "versione", "set", "foil", "min CT €", "rif. CM €", "volte", "inserzioni"],
+          [[n[:32], (v or "")[:16], c, "sì" if f else "", p, r, x, k]
+           for n, v, c, f, p, r, x, k in rows])
 
 
 class SimpleArgs:
@@ -239,6 +317,7 @@ def main():
     m.add_argument("--min-prezzo", type=float, default=5.0)
     m.add_argument("--top", type=int, default=30)
     m.add_argument("--foil", action="store_true")
+    m.add_argument("--soglia", type=float, default=DEFAULT_SOGLIA)
     m.add_argument("--sigillati", action="store_true", help="classifica dei prodotti sigillati")
     m.add_argument("--tutte", action="store_true", help="tutte le categorie")
 
@@ -246,11 +325,19 @@ def main():
 
     pa = sub.add_parser("panoramica", help="quadro d'insieme dell'ultima raccolta")
     pa.add_argument("--top", type=int, default=20)
+    pa.add_argument("--soglia", type=float, default=DEFAULT_SOGLIA)
+
+    an = sub.add_parser("anomalie", help="prezzi CardTrader fuori mercato rispetto a Cardmarket")
+    an.add_argument("--top", type=int, default=40)
+    an.add_argument("--soglia", type=float, default=DEFAULT_SOGLIA)
+    an.add_argument("--sigillati", action="store_true")
+    an.add_argument("--tutte", action="store_true")
 
     args = ap.parse_args()
     con = sqlite3.connect(args.db)
+    con.executescript(SCRYFALL_SCHEMA)   # crea le tabelle Scryfall vuote se mancano
     {"carta": cmd_carta, "movimenti": cmd_movimenti, "stato": cmd_stato,
-     "panoramica": cmd_panoramica}[args.cmd](con, args)
+     "panoramica": cmd_panoramica, "anomalie": cmd_anomalie}[args.cmd](con, args)
 
 
 if __name__ == "__main__":
