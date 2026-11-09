@@ -15,6 +15,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+from ct_collector import NO_FINISH_CATEGORIES
 from scryfall_sync import SCHEMA as SCRYFALL_SCHEMA
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -113,11 +114,20 @@ def category_filter(args, alias="b"):
             names)
 
 
+def finishes_for(args):
+    """Finiture da considerare: i sigillati comprendono quelli senza finitura (foil = 2)."""
+    base = 1 if getattr(args, "foil", False) else 0
+    if getattr(args, "sigillati", False) or getattr(args, "tutte", False):
+        return (base, 2)
+    return (base,)
+
+
 def cmd_carta(con, args):
     cond, cparams = category_filter(args)
     prints = con.execute(
-        f"""SELECT b.id, b.name, b.version, e.name, e.code
+        f"""SELECT b.id, b.name, b.version, e.name, e.code, k.name
            FROM blueprints b LEFT JOIN expansions e ON e.id = b.expansion_id
+           LEFT JOIN categories k ON k.id = b.category_id
            WHERE b.name LIKE ? AND {cond} ORDER BY e.name""",
         (f"%{args.nome}%", *cparams),
     ).fetchall()
@@ -125,18 +135,23 @@ def cmd_carta(con, args):
         print("Nessuna carta trovata con quel nome.")
         return
     foil = int(args.foil)
-    print(f"Stampe trovate: {len(prints)} ({'foil' if foil else 'non foil'})\n")
+    print(f"Stampe trovate: {len(prints)} ({'foil' if foil else 'non foil'}; "
+          f"i prodotti sigillati senza finitura sono mostrati comunque)\n")
+    finish_of = {}
     summary = []
-    for bp_id, name, version, exp_name, code in prints:
+    for bp_id, name, version, exp_name, code, cat in prints:
+        f = 2 if cat in NO_FINISH_CATEGORIES else foil
+        finish_of[bp_id] = f
         last = con.execute(
-            """SELECT date, min_price_nm, median_price, total_qty FROM daily_stats
+            """SELECT date, COALESCE(min_price_nm, CASE WHEN foil = 2 THEN min_price END),
+                      median_price, total_qty FROM daily_stats
                WHERE blueprint_id=? AND foil=? ORDER BY date DESC LIMIT 1""",
-            (bp_id, foil),
+            (bp_id, f),
         ).fetchone()
         sold = con.execute(
             """SELECT SUM(sold_qty_est), SUM(removed_qty_est) FROM daily_stats
                WHERE blueprint_id=? AND foil=? AND date >= date('now', ?)""",
-            (bp_id, foil, f"-{args.giorni} days"),
+            (bp_id, f, f"-{args.giorni} days"),
         ).fetchone()
         ref = con.execute(
             """SELECT CASE WHEN ? = 1 THEN sf.eur_foil ELSE sf.eur END, sf.edhrec_rank
@@ -148,7 +163,8 @@ def cmd_carta(con, args):
                         (None, None, None)), ref[0], sold[0], sold[1], ref[1]])
     table(["id", "carta", "set", "min NM €", "mediana €", "copie", "rif. CM €",
            "vendute", "uscite", "EDHREC"], summary)
-    print("'rif. CM €' = prezzo di riferimento Cardmarket (Scryfall); "
+    print("'min NM €' per i sigillati = prezzo minimo; "
+          "'rif. CM €' = prezzo di riferimento Cardmarket (Scryfall); "
           "'EDHREC' = posizione di popolarità in Commander, 1 = la più giocata.")
     print(f"\n'vendute' e 'uscite' sono la somma degli ultimi {args.giorni} giorni.")
 
@@ -159,7 +175,7 @@ def cmd_carta(con, args):
                       total_qty, sold_qty_est, removed_qty_est, new_qty
                FROM daily_stats WHERE blueprint_id=? AND foil=?
                AND date >= date('now', ?) ORDER BY date""",
-            (bp_id, foil, f"-{args.giorni} days"),
+            (bp_id, finish_of.get(bp_id, foil), f"-{args.giorni} days"),
         ).fetchall()
         print(f"\nStorico della stampa {bp_id}:")
         table(["data", "min", "min NM", "min NM EN", "mediana", "copie",
@@ -170,34 +186,37 @@ def cmd_carta(con, args):
 
 def cmd_movimenti(con, args):
     """Stampe con più vendite stimate nel periodo, con variazione del prezzo NM."""
-    foil = int(args.foil)
+    finishes = finishes_for(args)
+    fmarks = ",".join("?" * len(finishes))
     cond, cparams = category_filter(args)
     rows = con.execute(
         f"""
         WITH periodo AS (
-            SELECT blueprint_id,
+            SELECT blueprint_id, foil,
                    SUM(COALESCE(sold_qty_est, 0)) AS vendute,
                    SUM(COALESCE(removed_qty_est, 0)) AS uscite,
                    SUM(COALESCE(new_qty, 0)) AS nuove,
                    MIN(date) AS d0, MAX(date) AS d1
             FROM daily_stats
-            WHERE foil = ? AND date >= date('now', ?)
-            GROUP BY blueprint_id
+            WHERE foil IN ({fmarks}) AND date >= date('now', ?)
+            GROUP BY blueprint_id, foil
         )
         SELECT b.name, e.code, p.vendute, p.uscite, p.nuove,
-               s0.min_price_nm AS prezzo_inizio, s1.min_price_nm AS prezzo_fine,
+               COALESCE(s0.min_price_nm, CASE WHEN s0.foil = 2 THEN s0.min_price END),
+               COALESCE(s1.min_price_nm, CASE WHEN s1.foil = 2 THEN s1.min_price END),
                s1.total_qty
         FROM periodo p
-        JOIN daily_stats s0 ON s0.blueprint_id = p.blueprint_id AND s0.foil = ? AND s0.date = p.d0
-        JOIN daily_stats s1 ON s1.blueprint_id = p.blueprint_id AND s1.foil = ? AND s1.date = p.d1
+        JOIN daily_stats s0 ON s0.blueprint_id = p.blueprint_id AND s0.foil = p.foil AND s0.date = p.d0
+        JOIN daily_stats s1 ON s1.blueprint_id = p.blueprint_id AND s1.foil = p.foil AND s1.date = p.d1
         JOIN blueprints b ON b.id = p.blueprint_id
         LEFT JOIN expansions e ON e.id = b.expansion_id
         {ref_join()}
-        WHERE s1.min_price_nm >= ? AND {cond} AND NOT {anomalo_expr(args.soglia, d='s1')}
+        WHERE COALESCE(s1.min_price_nm, CASE WHEN s1.foil = 2 THEN s1.min_price END) >= ?
+              AND {cond} AND NOT {anomalo_expr(args.soglia, d='s1')}
         ORDER BY p.vendute DESC
         LIMIT ?
         """,
-        (foil, f"-{args.giorni} days", foil, foil, scryfall_date(con), args.min_prezzo,
+        (*finishes, f"-{args.giorni} days", scryfall_date(con), args.min_prezzo,
          *cparams, args.top),
     ).fetchall()
     out = []
@@ -225,12 +244,15 @@ def cmd_panoramica(con, args):
                   SUM(EXISTS(SELECT 1 FROM daily_stats d WHERE d.blueprint_id=b.id
                              AND d.date=? AND d.foil=0 AND d.n_listings>0)) AS non_foil,
                   SUM(EXISTS(SELECT 1 FROM daily_stats d WHERE d.blueprint_id=b.id
-                             AND d.date=? AND d.foil=1 AND d.n_listings>0)) AS foil
+                             AND d.date=? AND d.foil=1 AND d.n_listings>0)) AS foil,
+                  SUM(EXISTS(SELECT 1 FROM daily_stats d WHERE d.blueprint_id=b.id
+                             AND d.date=? AND d.foil=2 AND d.n_listings>0)) AS sigillati
            FROM blueprints b LEFT JOIN categories k ON k.id=b.category_id
            GROUP BY k.name ORDER BY catalogo DESC""",
-        (last, last),
+        (last, last, last),
     ).fetchall()
-    table(["categoria", "in catalogo", "in vendita non foil", "in vendita foil"], rows)
+    table(["categoria", "in catalogo", "in vendita non foil", "in vendita foil",
+           "in vendita senza finitura"], rows)
 
     single, _ = category_filter(SimpleArgs(), "b")
     sdate = scryfall_date(con)

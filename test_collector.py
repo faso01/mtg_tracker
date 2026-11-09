@@ -25,7 +25,8 @@ class FakeClient:
         self.calls.append((path, params))
         if path == "/categories":
             return [{"id": 1, "name": "Magic Single Card", "game_id": 1},
-                    {"id": 2, "name": "Magic Token/Emblem", "game_id": 1}]
+                    {"id": 2, "name": "Magic Token/Emblem", "game_id": 1},
+                    {"id": 5, "name": "Magic Booster Boxes", "game_id": 1}]
         if path == "/expansions":
             return [{"id": 10, "game_id": 1, "code": "dmu", "name": "Dominaria United"},
                     {"id": 99, "game_id": 5, "code": "xyz", "name": "Pokemon set"}]
@@ -45,14 +46,34 @@ class FakeClient:
                     {"id": 600, "name": "Seven Dwarves", "version": None, "expansion_id": 10,
                      "category_id": 1, "scryfall_id": "sld7", "card_market_ids": [],
                      "tcg_player_id": None},
+                    {"id": 700, "name": "Dominaria United | Draft Booster Box", "version": None,
+                     "expansion_id": 10, "category_id": 5, "scryfall_id": None,
+                     "card_market_ids": [], "tcg_player_id": None},
                     {"id": 300, "name": "Zombie Token", "version": None, "expansion_id": 10,
                      "category_id": 2, "scryfall_id": "ghi", "card_market_ids": [],
                      "tcg_player_id": None}]
         if path == "/marketplace/products":
-            if params["foil"] == "true":
+            foil = params.get("foil")
+            if foil == "true":
                 return {}
-            return self.market()
+            if foil == "false":
+                return self.market()
+            # senza filtro foil: carte + box (che non ha la proprietà foil)
+            data = dict(self.market())
+            data["700"] = self.boxes()
+            return data
         raise AssertionError(path)
+
+    def boxes(self):
+        def box(pid, cents, qty):
+            p = product(pid, 700, cents, qty=qty)
+            p["properties_hash"] = {"mtg_language": "en"}   # niente condizione né foil
+            return p
+        if self.day == 0:
+            return [box(8000, 9500, 3), box(8001, 9900, 1)]
+        if self.day == 1:
+            return [box(8000, 9500, 2)]                     # 1 venduto, 1 inserzione sparita
+        return []
 
     def market(self):
         # Sheoldred (100): 25 inserzioni da 70€ a 94€, id 1000..1024
@@ -140,6 +161,16 @@ def main():
     assert con.execute("SELECT COUNT(*) FROM daily_stats WHERE blueprint_id=300").fetchone()[0] == 0
     assert con.execute("SELECT COUNT(*) FROM listings_current WHERE blueprint_id=300").fetchone()[0] == 0
     print("Token esclusi dallo storico: ok")
+
+    r = con.execute("""SELECT foil, sold_qty_est, removed_qty_est, min_price, total_qty
+                       FROM daily_stats WHERE blueprint_id=700 AND date=?""", (d1,)).fetchall()
+    print("Booster box giorno 2:", r)
+    assert r == [(2, 1, 1, 95.0, 2)], r                     # salvato come sigillato (foil=2)
+    assert con.execute("SELECT COUNT(*) FROM daily_stats WHERE blueprint_id=700 AND foil<2"
+                       ).fetchone()[0] == 0
+    # le carte non vengono duplicate dalla richiesta senza filtro
+    assert con.execute("SELECT COUNT(*) FROM daily_stats WHERE foil=2 AND blueprint_id<>700"
+                       ).fetchone()[0] == 0
 
     test_scryfall_e_anomalie(con, d1)
 

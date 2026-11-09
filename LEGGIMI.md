@@ -81,6 +81,12 @@ Complete Sets, Tournament Prerelease Packs, Cases & Displays. Token, playmat, da
 deck box, album e imballaggi sono esclusi. L'elenco è in `TRACKED_CATEGORIES` all'inizio di
 `ct_collector.py`; per salvare tutto si usa `--all-categories`.
 
+Box, booster, bundle, prerelease pack e casse non hanno la proprietà foil, e l'API li esclude dalle
+richieste "foil" e "non foil". Per le espansioni che ne hanno nel catalogo si fa quindi una terza
+richiesta senza filtro, e questi prodotti si salvano con `foil = 2` ("senza finitura"). I Complete
+Sets hanno la proprietà foil e arrivano con le richieste normali. In `analisi.py` l'opzione
+`--sigillati` li comprende tutti.
+
 ### Prezzi anomali
 
 Alcuni venditori mettono prezzi "parcheggio" assurdi (es. 18.170 € per una carta da 50
@@ -109,7 +115,7 @@ La soglia si cambia con `--soglia`, es. `--soglia 10`. Senza dati Scryfall nulla
 | `/categories` | ogni esecuzione | id, nome |
 | `/expansions` | ogni esecuzione | id, codice, nome |
 | `/blueprints/export` | una volta a settimana per set | id, nome, versione, espansione, categoria, scryfall_id, cardmarket_id, tcgplayer_id |
-| `/marketplace/products` | ogni giorno, 2 chiamate per set (non foil e foil) | id inserzione, stampa, prezzo, quantità, condizione, lingua, foil, CardTrader Zero, vacanza, gradata |
+| `/marketplace/products` | ogni giorno, 2 chiamate per set (non foil e foil) + 1 senza filtro per i set con prodotti sigillati | id inserzione, stampa, prezzo, quantità, condizione, lingua, foil, CardTrader Zero, vacanza, gradata |
 
 Nome del venditore, descrizioni e immagini non vengono salvati.
 
@@ -149,7 +155,7 @@ Colonne di `daily_stats`, calcolate sulle 25 inserzioni più economiche
 
 | Colonna | Significato |
 | --- | --- |
-| `date`, `blueprint_id`, `foil` | chiave: giorno, stampa, finitura |
+| `date`, `blueprint_id`, `foil` | chiave: giorno, stampa, finitura (0 non foil, 1 foil, 2 sigillato senza finitura) |
 | `min_price` | prezzo minimo, qualsiasi condizione e lingua |
 | `min_price_nm` | minimo Near Mint o Mint |
 | `min_price_nm_en` | minimo Near Mint inglese: il confronto più omogeneo nel tempo |

@@ -51,6 +51,13 @@ TRACKED_CATEGORIES = {
     "Magic Cases & Displays",   # dubbio: casse sigillate o espositori? togliere se è rumore
 }
 
+# Prodotti sigillati senza la proprietà foil (box, booster, bundle...): l'API li esclude dalle
+# richieste con foil=true/false, quindi servono una richiesta a parte senza filtro.
+# Si salvano con foil = 2 ("senza finitura"). I Complete Sets hanno la proprietà foil e
+# arrivano già con le richieste normali.
+NO_FINISH_CATEGORIES = TRACKED_CATEGORIES - {"Magic Single Card", "Magic Complete Sets"}
+FINISH_LABEL = {0: "non foil", 1: "foil", 2: "sigillati"}
+
 
 # --------------------------------------------------------------------------- API
 
@@ -132,7 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_lc_exp ON listings_current(expansion_id, foil);
 CREATE TABLE IF NOT EXISTS daily_stats (
     date TEXT,
     blueprint_id INTEGER,
-    foil INTEGER,
+    foil INTEGER,             -- 0 non foil, 1 foil, 2 prodotto sigillato senza finitura
     currency TEXT,
     n_listings INTEGER,       -- inserzioni acquistabili tra le 25 più economiche
     total_qty INTEGER,        -- copie totali in quelle inserzioni
@@ -315,21 +322,48 @@ def excluded_blueprints(con, expansion_id, tracked_ids):
     return {bp for bp, cat in rows if cat is not None and cat not in tracked_ids}
 
 
-def process_expansion(client, con, expansion_id, foil, today, raw_sink=None, tracked_ids=None):
-    data = client.get("/marketplace/products",
-                      {"expansion_id": expansion_id, "foil": "true" if foil else "false"})
+def no_finish_category_ids(con):
+    rows = con.execute("SELECT id, name FROM categories").fetchall()
+    return {cid for cid, name in rows if name in NO_FINISH_CATEGORIES}
+
+
+def sealed_blueprints(con, expansion_id, no_finish_ids):
+    """Prodotti sigillati senza finitura presenti nel catalogo di un'espansione."""
+    if not no_finish_ids:
+        return set()
+    marks = ",".join("?" * len(no_finish_ids))
+    return {r[0] for r in con.execute(
+        f"SELECT id FROM blueprints WHERE expansion_id=? AND category_id IN ({marks})",
+        (expansion_id, *no_finish_ids))}
+
+
+def process_expansion(client, con, expansion_id, foil, today, raw_sink=None, tracked_ids=None,
+                      keep=None):
+    """foil: 0 = non foil, 1 = foil, 2 = sigillati senza finitura (richiesta senza filtro foil,
+    di cui si tengono solo le stampe in `keep`)."""
+    foil = int(foil)
+    params = {"expansion_id": expansion_id}
+    if foil in (0, 1):
+        params["foil"] = "true" if foil else "false"
+    data = client.get("/marketplace/products", params)
     if data is None:
         log(f"  nessun dato dall'API per l'espansione {expansion_id} "
-            f"({'foil' if foil else 'non foil'}), saltata")
+            f"({FINISH_LABEL[foil]}), saltata")
         return 0
     if raw_sink is not None:
         raw_sink.append({"expansion_id": expansion_id, "foil": foil, "data": data})
-    skip = excluded_blueprints(con, expansion_id, tracked_ids)
+    if keep is not None:
+        skip = None
+    else:
+        skip = excluded_blueprints(con, expansion_id, tracked_ids)
+
+    def ignored(bp):
+        return bp not in keep if keep is not None else bp in skip
 
     # oggi
     curr_by_bp = {}
     for bp_id, products in data.items():
-        if int(bp_id) in skip:
+        if ignored(int(bp_id)):
             continue
         curr_by_bp[int(bp_id)] = [parse_listing(p) for p in products]
 
@@ -341,7 +375,7 @@ def process_expansion(client, con, expansion_id, foil, today, raw_sink=None, tra
     ).fetchall()
     prev_by_bp, prev_date = {}, None
     for pid, bp, price, qty, seen in prev_rows:
-        if bp in skip:
+        if ignored(bp):
             continue
         prev_by_bp.setdefault(bp, {})[pid] = (price, qty)
         prev_date = seen
@@ -429,6 +463,7 @@ def run(client, con, args, today=None, sleep=time.sleep):
 
     sync_categories(client, con)
     tracked_ids = None if getattr(args, "all_categories", False) else tracked_category_ids(con)
+    no_finish_ids = no_finish_category_ids(con)
     expansions = sync_expansions(client, con, today)
     if args.only:
         wanted = {c.strip().lower() for c in args.only.split(",")}
@@ -438,7 +473,7 @@ def run(client, con, args, today=None, sleep=time.sleep):
     log(f"Espansioni da elaborare: {len(expansions)}")
 
     raw_sink = [] if args.save_raw else None
-    ok = failed = written = 0
+    ok = failed = written = sealed_calls = 0
     for i, e in enumerate(expansions, 1):
         try:
             if blueprints_due(con, e["id"], today):
@@ -446,6 +481,12 @@ def run(client, con, args, today=None, sleep=time.sleep):
             for foil in (False, True):
                 written += process_expansion(client, con, e["id"], foil, today, raw_sink,
                                              tracked_ids)
+                sleep(MARKETPLACE_DELAY)
+            keep = sealed_blueprints(con, e["id"], no_finish_ids)
+            if keep:
+                written += process_expansion(client, con, e["id"], 2, today, raw_sink,
+                                             keep=keep)
+                sealed_calls += 1
                 sleep(MARKETPLACE_DELAY)
             ok += 1
         except SystemExit:
@@ -468,7 +509,8 @@ def run(client, con, args, today=None, sleep=time.sleep):
         (started, datetime.now().isoformat(timespec="seconds"), today, ok, failed, written),
     )
     con.commit()
-    log(f"Fatto: {ok} espansioni ok, {failed} fallite, {written} righe scritte.")
+    log(f"Fatto: {ok} espansioni ok, {failed} fallite, {written} righe scritte "
+        f"({sealed_calls} richieste aggiuntive per i prodotti sigillati).")
     return ok, failed, written
 
 
