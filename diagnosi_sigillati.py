@@ -36,18 +36,24 @@ def candidates(con):
 
 def describe(con, label, data, sealed_ids):
     data = data or {}
+    if not isinstance(data, dict):
+        print(f"\n[{label}] risposta di tipo inatteso: {str(data)[:300]}")
+        return set()
     bps = {int(k) for k in data}
-    found = bps & sealed_ids
+    with_listings = {int(k) for k, v in data.items() if v}
+    found = with_listings & sealed_ids
+    empty = (bps - with_listings) & sealed_ids
     listings = sum(len(v) for k, v in data.items() if int(k) in found)
-    print(f"\n[{label}] stampe restituite: {len(bps)}, di cui sigillati: {len(found)} "
-          f"({listings} inserzioni)")
+    print(f"\n[{label}] stampe restituite: {len(bps)} ({len(with_listings)} con inserzioni), "
+          f"sigillati con inserzioni: {len(found)} ({listings} inserzioni)"
+          + (f", sigillati restituiti ma senza inserzioni: {len(empty)}" if empty else ""))
     if found:
         cats = Counter(con.execute(
             "SELECT k.name FROM blueprints b JOIN categories k ON k.id=b.category_id "
             "WHERE b.id=?", (bp,)).fetchone()[0] for bp in found)
         print("  per categoria:", dict(cats))
         bp = sorted(found)[0]
-        sample = data.get(str(bp)) or data.get(bp)
+        sample = data.get(str(bp)) or data.get(bp) or [{}]
         p = sample[0]
         print(f"  esempio, stampa {bp}: prezzo {p.get('price')}, quantità {p.get('quantity')}")
         print(f"  proprietà dell'inserzione: {p.get('properties_hash')}")
@@ -95,7 +101,9 @@ def main():
         time.sleep(MARKETPLACE_DELAY)
 
     if sealed:
-        bp_id, bp_name, _ = sealed[0]
+        # preferisce un sigillato visto nella richiesta senza filtro, se c'è
+        seen = results["senza filtro foil"]
+        bp_id, bp_name, _ = next((r for r in sealed if r[0] in seen), sealed[0])
         data = client.get("/marketplace/products", {"blueprint_id": bp_id})
         describe(con, f"solo il prodotto {bp_id} '{bp_name}'", data, sealed_ids)
 
