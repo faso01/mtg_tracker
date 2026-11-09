@@ -108,6 +108,35 @@ def card_rows(card, today):
     return daily, meta
 
 
+class _Prefixed:
+    """Rimette davanti allo stream i primi byte già letti per capirne il formato."""
+    def __init__(self, head, rest):
+        self.head, self.rest = head, rest
+
+    def read(self, n=-1):
+        if self.head:
+            out = self.head if n is None or n < 0 else self.head[:n]
+            self.head = self.head[len(out):]
+            return out
+        return self.rest.read(n)
+
+
+def iter_cards(stream):
+    """Carte una alla volta, sia da un elenco JSON [ {...}, {...} ]
+    sia dal formato una-carta-per-riga (JSON Lines) usato oggi da Scryfall."""
+    import ijson
+    head = stream.read(4096)
+    first = head.lstrip()[:1]
+    src = _Prefixed(head, stream)
+    if first == b"[":
+        cards = ijson.items(src, "item")
+    else:
+        cards = ijson.items(src, "", multiple_values=True)
+    for card in cards:
+        if isinstance(card, dict) and card.get("object", "card") == "card":
+            yield card
+
+
 def save(con, daily, meta):
     con.executemany(
         """INSERT OR REPLACE INTO scryfall_daily
@@ -176,7 +205,7 @@ def open_stream(retries=4):
             listing = resp.json()
             info = pick_default_cards(listing)
             url = file_url(info)
-            log(f"  file del {info.get('updated_at')}, {(info.get('size') or 0) // 1_000_000} MB")
+            log(f"  file del {info.get('updated_at')}, {(info.get('size') or 0) // 1_000_000 or '?'} MB")
             r = requests.get(url, headers=HEADERS, stream=True, timeout=120)
             r.raise_for_status()
             r.raw.decode_content = True  # decomprime al volo se il server comprime
@@ -199,8 +228,6 @@ def main():
     ap.add_argument("--file", help="file Default Cards già scaricato (per prove)")
     args = ap.parse_args()
 
-    import ijson
-
     today = date.today().isoformat()
     started = datetime.now().isoformat(timespec="seconds")
     con = sqlite3.connect(args.db)
@@ -210,13 +237,13 @@ def main():
     if args.file:
         log(f"Leggo il file {args.file}")
         with open(args.file, "rb") as fh:
-            n = import_cards(con, ijson.items(fh, "item"), today)
+            n = import_cards(con, iter_cards(fh), today)
         bulk_updated = None
     else:
         log("Scarico Default Cards da Scryfall")
         resp, stream, bulk_updated = open_stream()
         with resp:
-            n = import_cards(con, ijson.items(stream, "item"), today)
+            n = import_cards(con, iter_cards(stream), today)
 
     con.execute(
         """INSERT INTO scryfall_runs(run_date, started_at, finished_at, bulk_updated_at, cards)

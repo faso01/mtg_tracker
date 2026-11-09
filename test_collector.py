@@ -156,12 +156,11 @@ def test_scryfall_e_anomalie(con, day):
     # import dal file, come in uso reale (lettura in streaming con ijson)
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "default-cards.json")
-        with open(path, "w") as fh:
-            json.dump(cards, fh)
+        with open(path, "w") as fh:          # formato attuale di Scryfall: una carta per riga
+            fh.write("\n".join(json.dumps(c) for c in cards))
         con.executescript(sf.SCHEMA)
-        import ijson
         with open(path, "rb") as fh:
-            n = sf.import_cards(con, ijson.items(fh, "item"), day)
+            n = sf.import_cards(con, sf.iter_cards(fh), day)
     assert n == 3, n
     r = con.execute("SELECT eur, eur_foil, usd, edhrec_rank FROM scryfall_daily "
                     "WHERE scryfall_id='abc'").fetchone()
