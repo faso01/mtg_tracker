@@ -491,9 +491,15 @@ def main():
         return
     con = open_db(args.db)
     try:
-        run(client, con, args)
+        ok, failed, _ = run(client, con, args)
     finally:
         con.close()
+    # Codice di uscita leggibile dall'Utilita' di pianificazione:
+    # 0 = tutto ok, 2 = alcune espansioni fallite, 1 = nessuna espansione riuscita
+    if ok == 0:
+        sys.exit(1)
+    if failed:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
