@@ -25,7 +25,8 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-BULK_URL = "https://api.scryfall.com/bulk-data/default-cards"
+BULK_LIST_URL = "https://api.scryfall.com/bulk-data"
+BULK_TYPE = "default_cards"
 HEADERS = {"User-Agent": "mtg_tracker/1.0", "Accept": "application/json"}
 SCRIPT_DIR = Path(__file__).resolve().parent
 BATCH = 5000
@@ -147,9 +148,14 @@ def open_stream(retries=4):
     wait = 10
     for attempt in range(1, retries + 1):
         try:
-            info = requests.get(BULK_URL, headers=HEADERS, timeout=60)
-            info.raise_for_status()
-            info = info.json()
+            resp = requests.get(BULK_LIST_URL, headers=HEADERS, timeout=60)
+            resp.raise_for_status()
+            listing = resp.json()
+            items = [x for x in listing.get("data", []) if x.get("type") == BULK_TYPE]
+            if not items or not items[0].get("download_uri"):
+                raise RuntimeError(f"risposta inattesa da Scryfall: {str(listing)[:400]}")
+            info = items[0]
+            log(f"  file del {info.get('updated_at')}, {info.get('size', 0) // 1_000_000} MB")
             r = requests.get(info["download_uri"], headers=HEADERS, stream=True, timeout=120)
             r.raise_for_status()
             r.raw.decode_content = True  # decomprime al volo se arriva compresso
