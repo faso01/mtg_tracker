@@ -6,6 +6,8 @@ Come sono organizzati i dati nel repository privato:
   - release "stato":            stato.db.gz, il database senza lo storico (catalogo, fotografia
                                 delle inserzioni dell'ultimo giorno, registro delle esecuzioni);
                                 serve alla raccolta successiva per il confronto con ieri.
+                                catalogo.db.gz, lo stesso senza la fotografia: è quello che
+                                scarica il PC per ricostruire il database delle analisi.
   - release "storico-AAAA-MM":  un file compresso per giorno e per tabella, che non cambia più:
                                 daily_stats_AAAA-MM-GG.csv.gz, scryfall_daily_AAAA-MM-GG.csv.gz
 
@@ -35,7 +37,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_REPO = os.environ.get("DATI_REPO", "faso01/mtg_tracker_dati")
 STATE_TAG = "stato"
-STATE_FILE = "stato.db.gz"
+STATE_FILE = "stato.db.gz"          # per la raccolta: comprende la fotografia delle inserzioni
+CATALOG_FILE = "catalogo.db.gz"     # per il PC: come lo stato ma senza la fotografia, molto più leggero
 HISTORY_TABLES = ("daily_stats", "scryfall_daily")   # tabelle dello storico, un file per giorno
 
 
@@ -127,9 +130,10 @@ def import_file(con, table, path):
     return path
 
 
-def make_state(db_path, out_path):
+def make_state(db_path, out_path, drop_tables=()):
     """Copia del database con lo storico ridotto all'ultimo giorno, compressa.
-    L'ultimo giorno resta perché un rilancio nello stesso giorno conservi le vendite stimate."""
+    L'ultimo giorno resta perché un rilancio nello stesso giorno conservi le vendite stimate.
+    drop_tables: tabelle da svuotare (per il catalogo: la fotografia delle inserzioni)."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp_db = Path(tmp) / "stato.db"
         src = sqlite3.connect(db_path)
@@ -140,6 +144,9 @@ def make_state(db_path, out_path):
             if has_table(dst, table):
                 last = dst.execute(f"SELECT MAX(date) FROM {table}").fetchone()[0]
                 dst.execute(f"DELETE FROM {table} WHERE date < ?", (last,))
+        for table in drop_tables:
+            if has_table(dst, table):
+                dst.execute(f"DELETE FROM {table}")
         dst.commit()
         dst.execute("PRAGMA journal_mode=DELETE")
         dst.execute("VACUUM")
@@ -198,10 +205,12 @@ def cmd_pubblica(args):
             upload(args.repo, tag, sorted(month_files))
 
         state = make_state(db, Path(tmp) / STATE_FILE)
+        catalog = make_state(db, Path(tmp) / CATALOG_FILE, drop_tables=("listings_current",))
         ensure_release(args.repo, STATE_TAG, "Stato della raccolta",
-                       "Database senza storico: catalogo e fotografia delle inserzioni "
-                       "dell'ultimo giorno. Viene sostituito a ogni raccolta.")
-        upload(args.repo, STATE_TAG, [state])
+                       "stato.db.gz: database senza storico, con la fotografia delle inserzioni "
+                       "dell'ultimo giorno (per la raccolta). catalogo.db.gz: lo stesso senza "
+                       "fotografia (per il PC). Sostituiti a ogni raccolta.")
+        upload(args.repo, STATE_TAG, [catalog, state])
     log(f"Pubblicati {len(files)} file di storico e lo stato.")
 
 
@@ -212,8 +221,9 @@ def cmd_aggiorna(args):
     tags = list_tags(args.repo)
     if STATE_TAG not in tags:
         raise SystemExit("Nel repository dei dati non c'è ancora nessuno stato.")
-    log("Scarico lo stato")
-    download(args.repo, STATE_TAG, data_dir, pattern=STATE_FILE, clobber=True)
+    base = CATALOG_FILE if CATALOG_FILE in list_assets(args.repo, STATE_TAG) else STATE_FILE
+    log(f"Scarico {base}")
+    download(args.repo, STATE_TAG, data_dir, pattern=base, clobber=True)
     for tag in sorted(t for t in tags if t.startswith("storico-")):
         log(f"Scarico i file nuovi di {tag}")
         download(args.repo, tag, data_dir / tag)
@@ -224,7 +234,7 @@ def cmd_aggiorna(args):
         shutil.copyfile(db, backup)
         log(f"Copia di sicurezza del database attuale: {backup.name}")
     tmp_db = db.with_name(db.stem + "_nuovo.db")
-    with gzip.open(data_dir / STATE_FILE, "rb") as fi, open(tmp_db, "wb") as fo:
+    with gzip.open(data_dir / base, "rb") as fi, open(tmp_db, "wb") as fo:
         shutil.copyfileobj(fi, fo)
     con = sqlite3.connect(tmp_db)
     n = 0

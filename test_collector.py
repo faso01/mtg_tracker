@@ -336,6 +336,10 @@ def test_archivio():
         assert same == (1, 2), same           # i valori sopravvivono al passaggio in CSV
         assert con.execute("SELECT COUNT(*) FROM blueprints").fetchone()[0] > 0
         assert os.path.exists(os.path.join(tmp, "pc_precedente.db"))
+        # il PC usa il catalogo leggero: niente fotografia delle inserzioni
+        assert os.path.exists(os.path.join(tmp, "dati", "catalogo.db.gz"))
+        assert not os.path.exists(os.path.join(tmp, "dati", "stato.db.gz"))
+        assert con.execute("SELECT COUNT(*) FROM listings_current").fetchone()[0] == 0
         con.close()
     print("Archivio (pubblica, scarica-stato, aggiorna): ok")
 

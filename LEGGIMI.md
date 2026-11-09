@@ -67,7 +67,9 @@ La raccolta può girare ogni giorno sui server di GitHub. Il codice resta in que
 pubblico; i dati vanno nelle release di un repository **privato** (`mtg_tracker_dati`), visibile
 solo a te e ai collaboratori che aggiungi.
 
-- release `stato`: `stato.db.gz`, il database senza storico (catalogo e fotografia dell'ultimo giorno)
+- release `stato`: `stato.db.gz`, il database senza storico (catalogo e fotografia delle inserzioni
+  dell'ultimo giorno, circa 300 MB, usato dalla raccolta) e `catalogo.db.gz`, lo stesso senza la
+  fotografia, molto più leggero (usato dal PC)
 - release `storico-AAAA-MM`: un file compresso per giorno, `daily_stats_AAAA-MM-GG.csv.gz` e
   `scryfall_daily_AAAA-MM-GG.csv.gz`
 
