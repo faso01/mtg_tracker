@@ -176,6 +176,7 @@ def main():
                        ).fetchone()[0] == 0
 
     test_scryfall_e_anomalie(con, d1)
+    test_archivio()
 
     print("\nTUTTI I TEST SUPERATI")
 
@@ -231,6 +232,128 @@ def test_scryfall_e_anomalie(con, day):
     # centesimi e Seven Dwarves (riferimento di comodo 0,02 ignorato) no
     assert anomale == {400, 500}, anomale
 
+
+
+
+class FakeGitHub:
+    """Release di GitHub simulate in una cartella: risponde come il comando gh."""
+    def __init__(self, root):
+        import os
+        self.root = root
+        self.os = os
+
+    def __call__(self, *args, check=True):
+        import json, os, shutil
+        from types import SimpleNamespace as NS
+        a = list(args)
+        assert a[0] == "release", a
+        verb, rest = a[1], a[2:]
+        def opt(name):
+            return rest[rest.index(name) + 1] if name in rest else None
+        def ok(out=""):
+            return NS(returncode=0, stdout=out, stderr="")
+        tagdir = lambda t: os.path.join(self.root, t)
+        if verb == "list":
+            return ok(json.dumps([{"tagName": t} for t in sorted(os.listdir(self.root))]))
+        tag = rest[0]
+        if verb == "view":
+            if not os.path.isdir(tagdir(tag)):
+                if check:
+                    raise RuntimeError("release not found")
+                return NS(returncode=1, stdout="", stderr="release not found")
+            return ok(json.dumps({"assets": [{"name": n} for n in os.listdir(tagdir(tag))]}))
+        if verb == "create":
+            os.makedirs(tagdir(tag))
+            return ok()
+        if verb == "upload":
+            assert "--clobber" in rest
+            shutil.copy(rest[1], tagdir(tag))
+            return ok()
+        if verb == "download":
+            dest, pattern = opt("--dir"), opt("--pattern")
+            os.makedirs(dest, exist_ok=True)
+            for n in os.listdir(tagdir(tag)):
+                if pattern and n != pattern:
+                    continue
+                target = os.path.join(dest, n)
+                if os.path.exists(target) and "--skip-existing" in rest:
+                    continue
+                shutil.copy(os.path.join(tagdir(tag), n), target)
+            return ok()
+        raise AssertionError(a)
+
+
+def test_archivio():
+    import os, sqlite3, tempfile
+    from datetime import date, timedelta
+    from types import SimpleNamespace
+    import archivio
+
+    d0 = (date.today() - timedelta(days=1)).isoformat()
+    d1 = date.today().isoformat()
+    d2 = (date.today() + timedelta(days=1)).isoformat()
+    noargs = SimpleNamespace(only=None, limit=None, save_raw=False, raw_dir="raw")
+    with tempfile.TemporaryDirectory() as tmp:
+        remote = os.path.join(tmp, "github")
+        os.makedirs(remote)
+        archivio.gh = FakeGitHub(remote)
+        repo = "faso01/mtg_tracker_dati"
+
+        # 1) PC: due giorni di raccolta, poi primo invio di tutto lo storico
+        pc_db = os.path.join(tmp, "pc.db")
+        con = ct.open_db(pc_db)
+        client = FakeClient()
+        ct.run(client, con, noargs, today=d0, sleep=lambda s: None)
+        client.day = 1
+        ct.run(client, con, noargs, today=d1, sleep=lambda s: None)
+        pc_rows = con.execute("SELECT COUNT(*) FROM daily_stats").fetchone()[0]
+        con.close()
+        archivio.cmd_pubblica(SimpleNamespace(repo=repo, db=pc_db, tutte_le_date=True))
+        assert "stato" in os.listdir(remote)
+        assert sqlite3.connect(pc_db).execute("SELECT COUNT(*) FROM daily_stats"
+                                              ).fetchone()[0] == pc_rows   # PC non toccato
+
+        # 2) Actions, giorno dopo: scarica lo stato, raccoglie, pubblica
+        ci_db = os.path.join(tmp, "ci.db")
+        archivio.cmd_scarica_stato(SimpleNamespace(repo=repo, db=ci_db))
+        con = sqlite3.connect(ci_db)
+        assert [r[0] for r in con.execute("SELECT DISTINCT date FROM daily_stats")] == [d1]
+        client.day = 1                        # stesse inserzioni di ieri, tranne una vendita
+        ct.run(_OneMoreSale(client), con, noargs, today=d2, sleep=lambda s: None)
+        r = con.execute("SELECT sold_qty_est, prev_date FROM daily_stats "
+                        "WHERE blueprint_id=100 AND date=?", (d2,)).fetchone()
+        assert r == (1, d1), r                # confronto con la fotografia dello stato
+        con.close()
+        archivio.cmd_pubblica(SimpleNamespace(repo=repo, db=ci_db, tutte_le_date=False))
+
+        # 3) PC: aggiorna e ricostruisce il database completo
+        archivio.cmd_aggiorna(SimpleNamespace(repo=repo, db=pc_db, dir=os.path.join(tmp, "dati")))
+        con = sqlite3.connect(pc_db)
+        days = [r[0] for r in con.execute("SELECT DISTINCT date FROM daily_stats ORDER BY date")]
+        assert days == [d0, d1, d2], days
+        same = con.execute("SELECT sold_qty_est, removed_qty_est FROM daily_stats "
+                           "WHERE blueprint_id=100 AND date=?", (d1,)).fetchone()
+        assert same == (1, 2), same           # i valori sopravvivono al passaggio in CSV
+        assert con.execute("SELECT COUNT(*) FROM blueprints").fetchone()[0] > 0
+        assert os.path.exists(os.path.join(tmp, "pc_precedente.db"))
+        con.close()
+    print("Archivio (pubblica, scarica-stato, aggiorna): ok")
+
+
+class _OneMoreSale:
+    """Come FakeClient, ma una copia di Sheoldred in meno rispetto al giorno prima."""
+    def __init__(self, inner):
+        self.inner = inner
+
+    def get(self, path, params=None):
+        data = self.inner.get(path, params)
+        if path == "/marketplace/products" and params.get("foil") == "false":
+            data = dict(data)
+            data["100"] = [dict(p) for p in data["100"]]
+            for p in data["100"]:
+                if p["id"] == 1002:
+                    p["quantity"] -= 1
+        return data
 
 
 if __name__ == "__main__":

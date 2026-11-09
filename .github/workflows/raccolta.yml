@@ -1,0 +1,95 @@
+name: Raccolta giornaliera
+
+# Ogni giorno: scarica lo stato dal repository privato dei dati, raccoglie CardTrader e Scryfall,
+# ricarica stato e storico del giorno. Il database non viene mai salvato in questo repository.
+#
+# La raccolta pianificata parte solo se la variabile del repository RACCOLTA_ATTIVA vale "true"
+# (Settings > Secrets and variables > Actions > Variables). L'avvio manuale funziona sempre.
+
+on:
+  schedule:
+    - cron: "17 8 * * *"   # 08:17 UTC = 09:17 in Italia d'inverno, 10:17 d'estate
+  workflow_dispatch:
+    inputs:
+      solo_set:
+        description: "Solo questi set, es. one,dmu (vuoto = tutti)"
+        required: false
+        default: ""
+      pubblica:
+        description: "Carica i risultati nel repository dei dati"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # solo per il commit mensile che tiene attiva la pianificazione
+
+concurrency:
+  group: raccolta
+  cancel-in-progress: false
+
+jobs:
+  raccolta:
+    if: github.event_name == 'workflow_dispatch' || vars.RACCOLTA_ATTIVA == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      TZ: Europe/Rome
+      DATI_REPO: ${{ vars.DATI_REPO || 'faso01/mtg_tracker_dati' }}
+      GH_TOKEN: ${{ secrets.DATI_TOKEN }}
+      CARDTRADER_TOKEN: ${{ secrets.CARDTRADER_TOKEN }}
+      PUBBLICA: ${{ github.event_name == 'schedule' || inputs.pubblica }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installa le dipendenze
+        run: pip install -r requirements.txt
+
+      - name: Controlla i secrets
+        run: |
+          test -n "$CARDTRADER_TOKEN" || { echo "Manca il secret CARDTRADER_TOKEN"; exit 1; }
+          test -n "$GH_TOKEN" || { echo "Manca il secret DATI_TOKEN"; exit 1; }
+
+      - name: Scarica lo stato
+        run: python archivio.py scarica-stato
+
+      - name: Raccolta CardTrader
+        env:
+          SOLO_SET: ${{ inputs.solo_set }}
+        run: |
+          set +e
+          if [ -n "$SOLO_SET" ]; then
+            python ct_collector.py --only "$SOLO_SET"
+          else
+            python ct_collector.py
+          fi
+          code=$?
+          echo "Codice di uscita: $code (0 ok, 2 alcune espansioni fallite, 1 nessuna riuscita)"
+          [ "$code" -ne 1 ]
+
+      - name: Scryfall
+        continue-on-error: true
+        run: python scryfall_sync.py
+
+      - name: Riepilogo
+        run: python analisi.py stato
+
+      - name: Pubblica stato e storico
+        if: env.PUBBLICA == 'true'
+        run: python archivio.py pubblica
+
+      - name: Tieni attiva la pianificazione (il primo del mese)
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date +%d)" = "01" ]; then
+            date -u +"%Y-%m-%d %H:%M UTC" > .github/ultima_raccolta.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/ultima_raccolta.txt
+            git commit -m "Raccolta attiva: $(date +%Y-%m)"
+            git push
+          fi

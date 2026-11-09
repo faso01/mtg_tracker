@@ -226,3 +226,4 @@ cardtrader_token.txt
 *.db-shm
 raw/
 collector.log
+dati/

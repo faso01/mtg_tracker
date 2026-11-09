@@ -5,6 +5,8 @@ File principali:
 - `scryfall_sync.py` – subito dopo: prezzi di riferimento Cardmarket, popolarità EDHREC e dati delle carte da Scryfall
 - `esegui_raccolta.bat` – lancia i due script in sequenza e scrive tutto in `collector.log` (Windows)
 - `analisi.py` – per consultare i dati raccolti
+- `archivio.py` – carica i dati nel repository privato e li riscarica sul PC (vedi 4b)
+- `.github/workflows/raccolta.yml` – la raccolta giornaliera su GitHub Actions
 - `test_collector.py` – verifica la logica con dati finti (non serve internet)
 
 ## 1. Installazione
@@ -58,6 +60,54 @@ Codice finale nel registro: 0 = tutto ok, 2 = alcune espansioni fallite, 1 = nes
 Se il PC non è sempre acceso, un Raspberry Pi o un piccolo server da pochi euro al mese
 sono la soluzione più comoda. Un giorno saltato non rompe nulla: il confronto viene fatto
 con l'ultima lettura disponibile (colonna `prev_date`).
+
+## 4b. Raccolta su GitHub Actions (al posto del PC)
+
+La raccolta può girare ogni giorno sui server di GitHub. Il codice resta in questo repository
+pubblico; i dati vanno nelle release di un repository **privato** (`mtg_tracker_dati`), visibile
+solo a te e ai collaboratori che aggiungi.
+
+- release `stato`: `stato.db.gz`, il database senza storico (catalogo e fotografia dell'ultimo giorno)
+- release `storico-AAAA-MM`: un file compresso per giorno, `daily_stats_AAAA-MM-GG.csv.gz` e
+  `scryfall_daily_AAAA-MM-GG.csv.gz`
+
+### Configurazione (una volta sola)
+
+1. **Repository dei dati**: su GitHub crea il repository `mtg_tracker_dati`, **privato**, con un README.
+2. **Token per scrivere i dati**: GitHub → foto profilo → Settings → Developer settings →
+   Personal access tokens → Fine-grained tokens → Generate new token.
+   Repository access: *Only select repositories* → `mtg_tracker_dati`.
+   Permissions → Repository permissions → **Contents: Read and write**. Scadenza: 1 anno
+   (segnati quando rinnovarlo). Copia il token.
+3. **Secrets**: in `mtg_tracker` → Settings → Secrets and variables → Actions → New repository secret:
+   - `DATI_TOKEN` = il token del punto 2
+   - `CARDTRADER_TOKEN` = il tuo token CardTrader
+4. **GitHub CLI sul PC** (per scaricare i dati): `winget install GitHub.cli`, poi `gh auth login`.
+5. **Amico**: in `mtg_tracker_dati` → Settings → Collaborators → Add people.
+
+### Prova e attivazione
+
+1. **Prova**: Actions → Raccolta giornaliera → Run workflow, con "Solo questi set" = `one` e
+   "Carica i risultati" non spuntato. Verifica che CardTrader risponda dai server di GitHub.
+2. **Passaggio**: dopo una raccolta sul PC, dalla cartella `mtg_tracker`:
+   `python archivio.py pubblica --tutte-le-date` (carica tutto lo storico raccolto finora).
+3. **Attivazione**: in `mtg_tracker` → Settings → Secrets and variables → Actions → Variables →
+   New repository variable: `RACCOLTA_ATTIVA` = `true`. Poi disattiva l'attività pianificata sul PC:
+   due raccolte in parallelo si darebbero fastidio.
+
+La raccolta parte ogni giorno alle 08:17 UTC (09:17 in Italia d'inverno, 10:17 d'estate); GitHub
+a volte la avvia con qualche minuto di ritardo. Il primo del mese il flusso fa un piccolo commit
+(`.github/ultima_raccolta.txt`): GitHub sospende le attività pianificate dei repository pubblici
+dopo 60 giorni senza modifiche.
+
+### Consultare i dati sul PC
+
+```
+python archivio.py aggiorna
+```
+
+Scarica solo i file nuovi nella cartella `dati/` e ricostruisce `cardtrader.db` completo (la versione
+precedente resta come `cardtrader_precedente.db`). Poi si usa `analisi.py` come sempre.
 
 ## 5. Consultare i dati
 
