@@ -49,6 +49,11 @@ TRACKED_CATEGORIES = {
     "Magic Complete Sets",
     "Magic Tournament Prerelease Packs",
     "Magic Cases & Displays",   # dubbio: casse sigillate o espositori? togliere se è rumore
+    "Magic Preconstructed Decks",
+    "Magic Boxed Set",
+    "Magic Theme & Extra Box Sets",
+    "Magic Starter Decks",
+    "Magic Tins",
 }
 
 # Prodotti sigillati senza la proprietà foil (box, booster, bundle...): l'API li esclude dalle
@@ -311,15 +316,15 @@ def tracked_category_ids(con):
     return {cid for cid, name in rows if name in TRACKED_CATEGORIES}
 
 
-def excluded_blueprints(con, expansion_id, tracked_ids):
-    """Stampe dell'espansione la cui categoria NON è seguita.
+def excluded_blueprints(con, expansion_id, tracked_ids, no_finish_ids=frozenset()):
+    """Stampe dell'espansione da ignorare nelle richieste foil / non foil: categorie non seguite
+    e sigillati senza finitura (questi si leggono solo nella richiesta dedicata, foil = 2).
     Una stampa non ancora in catalogo viene tenuta (meglio un dato in più che uno perso)."""
-    if tracked_ids is None:
-        return set()
     rows = con.execute(
         "SELECT id, category_id FROM blueprints WHERE expansion_id=?", (expansion_id,)
     ).fetchall()
-    return {bp for bp, cat in rows if cat is not None and cat not in tracked_ids}
+    return {bp for bp, cat in rows if cat is not None and (
+        cat in no_finish_ids or (tracked_ids is not None and cat not in tracked_ids))}
 
 
 def no_finish_category_ids(con):
@@ -355,7 +360,7 @@ def process_expansion(client, con, expansion_id, foil, today, raw_sink=None, tra
     if keep is not None:
         skip = None
     else:
-        skip = excluded_blueprints(con, expansion_id, tracked_ids)
+        skip = excluded_blueprints(con, expansion_id, tracked_ids, no_finish_category_ids(con))
 
     def ignored(bp):
         return bp not in keep if keep is not None else bp in skip

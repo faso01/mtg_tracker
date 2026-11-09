@@ -77,11 +77,12 @@ Di default l'analisi mostra solo le carte singole.
 
 Il catalogo contiene tutto, ma lo storico giornaliero (`daily_stats`) viene salvato solo per
 carte singole e prodotti sigillati: Boosters, Booster Boxes, Bundles and Fat Packs,
-Complete Sets, Tournament Prerelease Packs, Cases & Displays. Token, playmat, dadi, bustine,
-deck box, album e imballaggi sono esclusi. L'elenco è in `TRACKED_CATEGORIES` all'inizio di
+Complete Sets, Tournament Prerelease Packs, Cases & Displays, Preconstructed Decks, Boxed Set,
+Theme & Extra Box Sets, Starter Decks, Tins. Token, playmat, dadi, bustine, deck box, album e
+imballaggi sono esclusi. L'elenco è in `TRACKED_CATEGORIES` all'inizio di
 `ct_collector.py`; per salvare tutto si usa `--all-categories`.
 
-Box, booster, bundle, prerelease pack e casse non hanno la proprietà foil, e l'API li esclude dalle
+Box, booster, bundle, mazzi precostruiti e gli altri sigillati (tranne i Complete Sets) non hanno la proprietà foil, e l'API li esclude dalle
 richieste "foil" e "non foil". Per le espansioni che ne hanno nel catalogo si fa quindi una terza
 richiesta senza filtro, e questi prodotti si salvano con `foil = 2` ("senza finitura"). I Complete
 Sets hanno la proprietà foil e arrivano con le richieste normali. In `analisi.py` l'opzione

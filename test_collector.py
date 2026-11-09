@@ -57,7 +57,10 @@ class FakeClient:
             if foil == "true":
                 return {}
             if foil == "false":
-                return self.market()
+                # caso limite: un sigillato che arrivasse anche qui va ignorato (niente doppioni)
+                data = dict(self.market())
+                data["700"] = self.boxes()
+                return data
             # senza filtro foil: carte + box (che non ha la proprietà foil)
             data = dict(self.market())
             data["700"] = self.boxes()

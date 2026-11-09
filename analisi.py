@@ -15,7 +15,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 
-from ct_collector import NO_FINISH_CATEGORIES
+from ct_collector import NO_FINISH_CATEGORIES, TRACKED_CATEGORIES
 from scryfall_sync import SCHEMA as SCRYFALL_SCHEMA
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -100,8 +100,7 @@ def table(headers, rows):
 
 
 SINGLE = ("Magic Single Card",)
-SEALED = ("Magic Boosters", "Magic Booster Boxes", "Magic Bundles and Fat Packs",
-          "Magic Complete Sets", "Magic Tournament Prerelease Packs", "Magic Cases & Displays")
+SEALED = tuple(sorted(TRACKED_CATEGORIES - set(SINGLE)))   # tutti i sigillati seguiti
 
 
 def category_filter(args, alias="b"):
