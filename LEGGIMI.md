@@ -58,6 +58,7 @@ con l'ultima lettura disponibile (colonna `prev_date`).
 python analisi.py carta "Ragavan" --giorni 60
 python analisi.py carta "Sheoldred" --id 220466 --foil
 python analisi.py movimenti --giorni 7 --min-prezzo 5
+python analisi.py panoramica                     # quadro d'insieme dell'ultima raccolta
 python analisi.py movimenti --sigillati          # classifica di box, bundle, booster
 python analisi.py carta "Sheoldred" --tutte      # include token, playmat, accessori
 ```

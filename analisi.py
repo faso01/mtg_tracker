@@ -7,6 +7,7 @@ Esempi:
   python analisi.py carta "Sheoldred, the Apocalypse" --foil --giorni 60
   python analisi.py movimenti --giorni 7 --min-prezzo 5
   python analisi.py stato
+  python analisi.py panoramica
 """
 
 import argparse
@@ -139,6 +140,76 @@ def cmd_movimenti(con, args):
            "var %", "copie ora"], out)
 
 
+def cmd_panoramica(con, args):
+    """Quadro d'insieme: catalogo, copertura dell'ultima raccolta, fasce di prezzo, top carte."""
+    last = con.execute("SELECT MAX(date) FROM daily_stats").fetchone()[0]
+    if not last:
+        print("Nessuna raccolta nel database.")
+        return
+    print(f"Ultima raccolta: {last}\n")
+
+    print("Catalogo e copertura per categoria")
+    rows = con.execute(
+        """SELECT k.name, COUNT(*) AS catalogo,
+                  SUM(EXISTS(SELECT 1 FROM daily_stats d WHERE d.blueprint_id=b.id
+                             AND d.date=? AND d.foil=0 AND d.n_listings>0)) AS non_foil,
+                  SUM(EXISTS(SELECT 1 FROM daily_stats d WHERE d.blueprint_id=b.id
+                             AND d.date=? AND d.foil=1 AND d.n_listings>0)) AS foil
+           FROM blueprints b LEFT JOIN categories k ON k.id=b.category_id
+           GROUP BY k.name ORDER BY catalogo DESC""",
+        (last, last),
+    ).fetchall()
+    table(["categoria", "in catalogo", "in vendita non foil", "in vendita foil"], rows)
+
+    single, _ = category_filter(SimpleArgs(), "b")
+    print(f"\nCarte singole non foil per fascia di prezzo (minimo Near Mint, {last})")
+    bands = con.execute(
+        f"""SELECT CASE
+                 WHEN d.min_price_nm IS NULL THEN 'nessuna copia NM'
+                 WHEN d.min_price_nm < 1 THEN 'a) meno di 1 euro'
+                 WHEN d.min_price_nm < 5 THEN 'b) 1 - 5 euro'
+                 WHEN d.min_price_nm < 20 THEN 'c) 5 - 20 euro'
+                 WHEN d.min_price_nm < 100 THEN 'd) 20 - 100 euro'
+                 ELSE 'e) oltre 100 euro' END AS fascia,
+               COUNT(*)
+           FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
+           WHERE d.date=? AND d.foil=0 AND {single}
+           GROUP BY fascia ORDER BY fascia""",
+        (last, *SINGLE),
+    ).fetchall()
+    table(["fascia", "stampe"], bands)
+
+    print(f"\nEspansioni con più carte singole in vendita (non foil)")
+    exps = con.execute(
+        f"""SELECT e.name, UPPER(e.code), COUNT(*),
+                   ROUND(SUM(d.min_price_nm), 0)
+            FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
+            JOIN expansions e ON e.id=b.expansion_id
+            WHERE d.date=? AND d.foil=0 AND {single}
+            GROUP BY e.id ORDER BY COUNT(*) DESC LIMIT ?""",
+        (last, *SINGLE, args.top),
+    ).fetchall()
+    table(["espansione", "set", "stampe in vendita", "somma minimi NM €"], exps)
+
+    print(f"\nCarte singole non foil più care (minimo Near Mint)")
+    top = con.execute(
+        f"""SELECT b.name, b.version, UPPER(e.code), d.min_price_nm, d.total_qty
+            FROM daily_stats d JOIN blueprints b ON b.id=d.blueprint_id
+            LEFT JOIN expansions e ON e.id=b.expansion_id
+            WHERE d.date=? AND d.foil=0 AND {single} AND d.min_price_nm IS NOT NULL
+            ORDER BY d.min_price_nm DESC LIMIT ?""",
+        (last, *SINGLE, args.top),
+    ).fetchall()
+    table(["carta", "versione", "set", "min NM €", "copie"],
+          [[n[:34], (v or "")[:18], c, p, q] for n, v, c, p, q in top])
+
+
+class SimpleArgs:
+    """Argomenti vuoti: category_filter restituisce il filtro delle carte singole."""
+    tutte = False
+    sigillati = False
+
+
 def cmd_stato(con, _args):
     runs = con.execute(
         """SELECT run_date, started_at, finished_at, expansions_ok, expansions_failed,
@@ -173,9 +244,13 @@ def main():
 
     sub.add_parser("stato", help="stato delle ultime raccolte")
 
+    pa = sub.add_parser("panoramica", help="quadro d'insieme dell'ultima raccolta")
+    pa.add_argument("--top", type=int, default=20)
+
     args = ap.parse_args()
     con = sqlite3.connect(args.db)
-    {"carta": cmd_carta, "movimenti": cmd_movimenti, "stato": cmd_stato}[args.cmd](con, args)
+    {"carta": cmd_carta, "movimenti": cmd_movimenti, "stato": cmd_stato,
+     "panoramica": cmd_panoramica}[args.cmd](con, args)
 
 
 if __name__ == "__main__":

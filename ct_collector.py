@@ -319,6 +319,8 @@ def process_expansion(client, con, expansion_id, foil, today, raw_sink=None, tra
     data = client.get("/marketplace/products",
                       {"expansion_id": expansion_id, "foil": "true" if foil else "false"})
     if data is None:
+        log(f"  nessun dato dall'API per l'espansione {expansion_id} "
+            f"({'foil' if foil else 'non foil'}), saltata")
         return 0
     if raw_sink is not None:
         raw_sink.append({"expansion_id": expansion_id, "foil": foil, "data": data})
