@@ -179,8 +179,12 @@ def open_stream(retries=4):
             log(f"  file del {info.get('updated_at')}, {(info.get('size') or 0) // 1_000_000} MB")
             r = requests.get(url, headers=HEADERS, stream=True, timeout=120)
             r.raise_for_status()
-            r.raw.decode_content = True  # decomprime al volo se arriva compresso
-            return r, info.get("updated_at")
+            r.raw.decode_content = True  # decomprime al volo se il server comprime
+            stream = r.raw
+            if url.split("?")[0].endswith(".gz"):
+                import gzip
+                stream = gzip.GzipFile(fileobj=r.raw)  # file salvato già compresso
+            return r, stream, info.get("updated_at")
         except Exception as e:
             if attempt == retries:
                 raise
@@ -210,9 +214,9 @@ def main():
         bulk_updated = None
     else:
         log("Scarico Default Cards da Scryfall")
-        resp, bulk_updated = open_stream()
+        resp, stream, bulk_updated = open_stream()
         with resp:
-            n = import_cards(con, ijson.items(resp.raw, "item"), today)
+            n = import_cards(con, ijson.items(stream, "item"), today)
 
     con.execute(
         """INSERT INTO scryfall_runs(run_date, started_at, finished_at, bulk_updated_at, cards)
