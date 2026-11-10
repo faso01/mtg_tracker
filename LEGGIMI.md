@@ -272,3 +272,5 @@ ORDER BY d.date;
   confronti, non per il prezzo esatto del momento.
 - Il database cresce di qualche decina di MB al giorno. `--save-raw` salva anche le risposte
   complete (molto più spazio) se in futuro vuoi ricalcolare statistiche diverse.
+
+CIAO MARCO
