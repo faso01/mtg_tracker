@@ -245,8 +245,10 @@ def cmd_aggiorna(args):
             import_file(con, table, path)
             n += 1
     # indici per interrogazioni veloci anche con mesi di storico
-    con.execute("CREATE INDEX IF NOT EXISTS idx_ds_date ON daily_stats(date, foil)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_sd_date ON scryfall_daily(date)")
+    if has_table(con, "daily_stats"):
+        con.execute("CREATE INDEX IF NOT EXISTS idx_ds_date ON daily_stats(date, foil)")
+    if has_table(con, "scryfall_daily"):
+        con.execute("CREATE INDEX IF NOT EXISTS idx_sd_date ON scryfall_daily(date)")
     con.commit()
     days = dates_in(con, "daily_stats")
     con.close()
