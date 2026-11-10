@@ -7,6 +7,7 @@ File principali:
 - `analisi.py` – per consultare i dati raccolti
 - `archivio.py` – carica i dati nel repository privato e li riscarica sul PC (vedi 4b)
 - `.github/workflows/raccolta.yml` – la raccolta giornaliera su GitHub Actions
+- `interfaccia.py`, `avvia_interfaccia.bat` – l'interfaccia grafica nel browser (vedi 5)
 - `test_collector.py` – verifica la logica con dati finti (non serve internet)
 
 ## 1. Installazione
@@ -111,7 +112,22 @@ python archivio.py aggiorna
 Scarica solo i file nuovi nella cartella `dati/` e ricostruisce `cardtrader.db` completo (la versione
 precedente resta come `cardtrader_precedente.db`). Poi si usa `analisi.py` come sempre.
 
-## 5. Consultare i dati
+## 5. Interfaccia grafica
+
+Doppio clic su `avvia_interfaccia.bat` (oppure `python avvia_interfaccia.py`): si apre il browser
+con quattro pagine.
+
+- **Panoramica**: numeri dell'ultima raccolta, fasce di prezzo, carte più care
+- **Carta**: cerchi una carta o un sigillato e vedi i grafici di prezzo (CardTrader e riferimento
+  Cardmarket), vendite stimate, copie disponibili e popolarità EDHREC nel tempo
+- **Movimenti**: classifica delle vendite stimate con filtri (periodo, prezzo, carte o sigillati, foil)
+- **Anomalie**: i prezzi esclusi, ordinabili anche dai più vicini alla soglia per cercare falsi allarmi
+
+Il pulsante **Aggiorna i dati** nella barra a sinistra fa lo stesso di `python archivio.py aggiorna`.
+L'interfaccia gira solo sul tuo PC (indirizzo `http://localhost:8501`); per chiuderla si chiude la
+finestra nera che si è aperta con il doppio clic.
+
+## 6. Consultare i dati da riga di comando
 
 ```
 python analisi.py carta "Ragavan" --giorni 60

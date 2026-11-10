@@ -244,6 +244,9 @@ def cmd_aggiorna(args):
         for path in sorted(data_dir.glob(f"storico-*/{table}_*.csv.gz")):
             import_file(con, table, path)
             n += 1
+    # indici per interrogazioni veloci anche con mesi di storico
+    con.execute("CREATE INDEX IF NOT EXISTS idx_ds_date ON daily_stats(date, foil)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_sd_date ON scryfall_daily(date)")
     con.commit()
     days = dates_in(con, "daily_stats")
     con.close()

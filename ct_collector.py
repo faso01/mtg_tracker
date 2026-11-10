@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS daily_stats (
     PRIMARY KEY (date, blueprint_id, foil)
 );
 CREATE INDEX IF NOT EXISTS idx_ds_bp ON daily_stats(blueprint_id, foil, date);
+CREATE INDEX IF NOT EXISTS idx_ds_date ON daily_stats(date, foil);
 
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
