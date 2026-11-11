@@ -214,6 +214,19 @@ def cmd_pubblica(args):
     log(f"Pubblicati {len(files)} file di storico e lo stato.")
 
 
+def cmd_oggi_pubblicato(args):
+    """Scrive 'si' o 'no': i dati di oggi sono già nel repository? (usato da GitHub Actions)"""
+    from datetime import date
+    today = date.today().isoformat()
+    tag = f"storico-{today[:7]}"
+    found = tag in list_tags(args.repo) and f"daily_stats_{today}.csv.gz" in list_assets(args.repo, tag)
+    log(f"Dati del {today} già pubblicati: {'sì' if found else 'no'}")
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a") as fh:
+            fh.write(f"fatto={'true' if found else 'false'}\n")
+
+
 def cmd_aggiorna(args):
     """Scarica i file nuovi e ricostruisce il database completo per le analisi."""
     data_dir = Path(args.dir)
@@ -268,12 +281,13 @@ def main():
     p = sub.add_parser("pubblica", help="carica lo stato e lo storico")
     p.add_argument("--tutte-le-date", action="store_true",
                    help="carica tutti i giorni presenti nel database, non solo l'ultimo")
+    sub.add_parser("oggi-pubblicato", help="(Actions) controlla se i dati di oggi ci sono già")
     a = sub.add_parser("aggiorna", help="(PC) scarica i dati e ricostruisce il database")
     a.add_argument("--dir", default=str(SCRIPT_DIR / "dati"),
                    help="cartella dove tenere i file scaricati")
     args = ap.parse_args()
     {"scarica-stato": cmd_scarica_stato, "pubblica": cmd_pubblica,
-     "aggiorna": cmd_aggiorna}[args.cmd](args)
+     "oggi-pubblicato": cmd_oggi_pubblicato, "aggiorna": cmd_aggiorna}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -7,8 +7,13 @@ name: Raccolta giornaliera
 # (Settings > Secrets and variables > Actions > Variables). L'avvio manuale funziona sempre.
 
 on:
+  # GitHub non garantisce l'orario delle attività pianificate (a volte le ritarda di ore):
+  # tre orari di riserva; parte il primo che GitHub esegue, gli altri trovano i dati di oggi
+  # già pubblicati e si fermano subito. Orari UTC: in Italia +1 d'inverno, +2 d'estate.
   schedule:
-    - cron: "17 8 * * *"   # 08:17 UTC = 09:17 in Italia d'inverno, 10:17 d'estate
+    - cron: "17 8 * * *"    # 09:17 in Italia (inverno)
+    - cron: "47 10 * * *"   # 11:47
+    - cron: "17 13 * * *"   # 14:17
   workflow_dispatch:
     inputs:
       solo_set:
@@ -28,8 +33,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  controllo:
+    # solo per le esecuzioni pianificate: i dati di oggi ci sono già?
+    if: github.event_name == 'schedule' && vars.RACCOLTA_ATTIVA == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Europe/Rome
+      DATI_REPO: ${{ vars.DATI_REPO || 'faso01/mtg_tracker_dati' }}
+      GH_TOKEN: ${{ secrets.DATI_TOKEN }}
+    outputs:
+      fatto: ${{ steps.check.outputs.fatto }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dati di oggi già pubblicati?
+        id: check
+        run: python archivio.py oggi-pubblicato
+
   raccolta:
-    if: github.event_name == 'workflow_dispatch' || vars.RACCOLTA_ATTIVA == 'true'
+    needs: controllo
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (needs.controllo.result == 'success' && needs.controllo.outputs.fatto == 'false'))
     runs-on: ubuntu-latest
     timeout-minutes: 340
     env:
