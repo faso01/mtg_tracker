@@ -24,6 +24,10 @@ on:
         description: "Carica i risultati nel repository dei dati"
         type: boolean
         default: false
+      salta_se_fatto:
+        description: "Non fare nulla se i dati di oggi sono già pubblicati (per l'avvio esterno)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # solo per il commit mensile che tiene attiva la pianificazione
@@ -34,8 +38,10 @@ concurrency:
 
 jobs:
   controllo:
-    # solo per le esecuzioni pianificate: i dati di oggi ci sono già?
-    if: github.event_name == 'schedule' && vars.RACCOLTA_ATTIVA == 'true'
+    # esecuzioni pianificate e avvii esterni (salta_se_fatto): i dati di oggi ci sono già?
+    if: >-
+      (github.event_name == 'schedule' && vars.RACCOLTA_ATTIVA == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.salta_se_fatto)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -54,7 +60,7 @@ jobs:
     needs: controllo
     if: >-
       always() &&
-      (github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'workflow_dispatch' && !inputs.salta_se_fatto) ||
        (needs.controllo.result == 'success' && needs.controllo.outputs.fatto == 'false'))
     runs-on: ubuntu-latest
     timeout-minutes: 340
