@@ -72,18 +72,25 @@ class CardTraderClient:
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {token}"})
         self.timeout = timeout
+        self.sleep = time.sleep
+        self.block_budget = BLOCK_BUDGET   # secondi di attesa per i 403 ancora disponibili
 
     def get(self, path, params=None, retries=5):
+        """Chiamata all'API con nuovi tentativi.
+        - errori di rete, 429 e 5xx: fino a `retries` tentativi, attesa 5, 10, 20... secondi;
+        - 403 con una pagina web invece dei dati: blocco temporaneo del sistema di protezione
+          di CardTrader (visto il 13 novembre); si aspetta 1, 2 e poi 5 minuti."""
         url = f"{BASE_URL}{path}"
-        wait = 5
-        for attempt in range(1, retries + 1):
+        wait, attempt, blocks = 5, 0, 0
+        while True:
+            attempt += 1
             try:
                 r = self.session.get(url, params=params, timeout=self.timeout)
             except Exception as e:  # errore di rete
-                if attempt == retries:
+                if attempt >= retries:
                     raise
                 log(f"  errore di rete ({e}), riprovo tra {wait}s")
-                time.sleep(wait)
+                self.sleep(wait)
                 wait *= 2
                 continue
             if r.status_code == 200:
@@ -92,12 +99,33 @@ class CardTraderClient:
                 raise SystemExit("Token non valido (401). Controlla CARDTRADER_TOKEN.")
             if r.status_code == 404:
                 return None  # es. dati non pronti per una espansione
+            if (r.status_code == 403 and is_block_page(r) and blocks < len(BLOCK_WAITS)
+                    and self.block_budget >= BLOCK_WAITS[blocks]):
+                pause = BLOCK_WAITS[blocks]
+                blocks += 1
+                self.block_budget -= pause
+                log(f"  CardTrader blocca temporaneamente le richieste (403), "
+                    f"attendo {pause // 60} min")
+                self.sleep(pause)
+                continue
             if r.status_code in (429, 500, 502, 503, 504) and attempt < retries:
                 log(f"  HTTP {r.status_code}, riprovo tra {wait}s")
-                time.sleep(wait)
+                self.sleep(wait)
                 wait *= 2
                 continue
             raise RuntimeError(f"HTTP {r.status_code} su {path} {params}: {r.text[:200]}")
+
+
+BLOCK_WAITS = (60, 120, 300)   # attese dopo un blocco 403, in secondi
+BLOCK_BUDGET = 1800            # massimo 30 min di attese per i 403 in tutta la raccolta,
+                               # così un blocco lungo non fa sforare il limite di 6 ore
+SECOND_PASS_PAUSE = 120        # pausa prima del secondo giro sulle espansioni fallite
+
+
+def is_block_page(r):
+    """Un 403 con una pagina HTML (non una risposta JSON dell'API) è un blocco temporaneo."""
+    ctype = (r.headers.get("Content-Type") or "").lower()
+    return "html" in ctype or r.text.lstrip()[:15].lower().startswith(("<!doctype", "<html"))
 
 
 # ------------------------------------------------------------------- database
@@ -480,28 +508,53 @@ def run(client, con, args, today=None, sleep=time.sleep):
 
     raw_sink = [] if args.save_raw else None
     ok = failed = written = sealed_calls = 0
+
+    def collect(e):
+        """Raccoglie un'espansione; restituisce (righe scritte, richieste sigillati)."""
+        rows = calls = 0
+        if blueprints_due(con, e["id"], today):
+            sync_blueprints(client, con, e["id"], today)
+        for foil in (False, True):
+            rows += process_expansion(client, con, e["id"], foil, today, raw_sink, tracked_ids)
+            sleep(MARKETPLACE_DELAY)
+        keep = sealed_blueprints(con, e["id"], no_finish_ids)
+        if keep:
+            rows += process_expansion(client, con, e["id"], 2, today, raw_sink, keep=keep)
+            calls += 1
+            sleep(MARKETPLACE_DELAY)
+        return rows, calls
+
+    failures = []
     for i, e in enumerate(expansions, 1):
         try:
-            if blueprints_due(con, e["id"], today):
-                sync_blueprints(client, con, e["id"], today)
-            for foil in (False, True):
-                written += process_expansion(client, con, e["id"], foil, today, raw_sink,
-                                             tracked_ids)
-                sleep(MARKETPLACE_DELAY)
-            keep = sealed_blueprints(con, e["id"], no_finish_ids)
-            if keep:
-                written += process_expansion(client, con, e["id"], 2, today, raw_sink,
-                                             keep=keep)
-                sealed_calls += 1
-                sleep(MARKETPLACE_DELAY)
+            rows, calls = collect(e)
+            written += rows
+            sealed_calls += calls
             ok += 1
         except SystemExit:
             raise
         except Exception as ex:
-            failed += 1
+            failures.append(e)
             log(f"  ERRORE su {e.get('code')} ({e['id']}): {ex}")
         if i % 50 == 0:
             log(f"  {i}/{len(expansions)} espansioni, {written} righe scritte")
+
+    # secondo giro: un errore temporaneo (blocco, server lento) spesso nel frattempo è passato
+    if failures:
+        log(f"Secondo giro su {len(failures)} espansioni fallite, tra {SECOND_PASS_PAUSE // 60} min")
+        sleep(SECOND_PASS_PAUSE)
+        for e in failures:
+            try:
+                rows, calls = collect(e)
+                written += rows
+                sealed_calls += calls
+                ok += 1
+            except SystemExit:
+                raise
+            except Exception as ex:
+                failed += 1
+                log(f"  ERRORE (secondo giro) su {e.get('code')} ({e['id']}): {ex}")
+        log(f"Secondo giro: recuperate {len(failures) - failed} espansioni su {len(failures)}")
 
     if raw_sink is not None:
         raw_dir = Path(args.raw_dir)

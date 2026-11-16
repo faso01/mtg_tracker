@@ -177,6 +177,8 @@ def main():
 
     test_scryfall_e_anomalie(con, d1)
     test_archivio()
+    test_blocco_403()
+    test_secondo_giro()
 
     print("\nTUTTI I TEST SUPERATI")
 
@@ -359,6 +361,110 @@ class _OneMoreSale:
                     p["quantity"] -= 1
         return data
 
+
+
+class _Resp:
+    def __init__(self, status, text="", ctype="application/json", data=None):
+        self.status_code, self.text, self.headers, self._data = status, text, {"Content-Type": ctype}, data
+
+    def json(self):
+        return self._data
+
+
+class _Session:
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    def get(self, url, params=None, timeout=None):
+        return self.responses.pop(0)
+
+
+def _client(responses):
+    c = ct.CardTraderClient("x")
+    c.session = _Session(responses)
+    c.waits = []
+    c.sleep = c.waits.append
+    return c
+
+
+def test_blocco_403():
+    block = _Resp(403, "<!DOCTYPE html><html>Attention Required</html>", "text/html")
+    # blocco temporaneo: attende 1 e 2 minuti, poi la richiesta passa
+    c = _client([block, block, _Resp(200, data={"ok": 1})])
+    assert c.get("/x") == {"ok": 1}
+    assert c.waits == [60, 120], c.waits
+    # blocco che non passa: dopo 1, 2 e 5 minuti si arrende (ci pensa il secondo giro)
+    c = _client([block] * 4)
+    try:
+        c.get("/x")
+        raise AssertionError("doveva fallire")
+    except RuntimeError as e:
+        assert "403" in str(e)
+    assert c.waits == [60, 120, 300], c.waits
+    # tetto complessivo: finiti i 30 minuti, i blocchi successivi falliscono subito
+    c = _client([block] * 30)
+    for _ in range(5):
+        try:
+            c.get("/x")
+        except RuntimeError:
+            pass
+    assert 0 < sum(c.waits) <= ct.BLOCK_BUDGET, c.waits
+    n = len(c.waits)
+    try:
+        c.get("/x")
+    except RuntimeError:
+        pass
+    assert len(c.waits) == n                        # nessuna nuova attesa
+    # 403 dell'API vera (JSON, es. permesso negato): nessuna attesa inutile
+    c = _client([_Resp(403, '{"error":"forbidden"}')])
+    try:
+        c.get("/x")
+        raise AssertionError("doveva fallire")
+    except RuntimeError:
+        pass
+    assert c.waits == []
+    # i 503 continuano a usare le attese brevi
+    c = _client([_Resp(503), _Resp(200, data=[])])
+    assert c.get("/x") == [] and c.waits == [5]
+    print("Blocchi 403: ok")
+
+
+class _FailsOnce:
+    """Come FakeClient, ma la prima richiesta foil dell'espansione fallisce."""
+    def __init__(self, inner):
+        self.inner, self.failed = inner, False
+
+    def get(self, path, params=None):
+        if path == "/marketplace/products" and params.get("foil") == "true" and not self.failed:
+            self.failed = True
+            raise RuntimeError("HTTP 403 su /marketplace/products")
+        return self.inner.get(path, params)
+
+
+def test_secondo_giro():
+    noargs = SimpleNamespace(only=None, limit=None, save_raw=False, raw_dir="raw")
+    d0 = (date.today() - timedelta(days=1)).isoformat()
+    d1 = date.today().isoformat()
+
+    def two_days(wrap_day1):
+        con = sqlite3.connect(":memory:")
+        con.executescript(ct.SCHEMA)
+        client = FakeClient()
+        ct.run(client, con, noargs, today=d0, sleep=lambda s: None)
+        client.day = 1
+        pauses = []
+        res = ct.run(wrap_day1(client), con, noargs, today=d1, sleep=pauses.append)
+        rows = con.execute("SELECT * FROM daily_stats WHERE date=? ORDER BY blueprint_id, foil",
+                           (d1,)).fetchall()
+        return res, pauses, rows
+
+    normal, _, expected = two_days(lambda c: c)
+    res, pauses, rows = two_days(_FailsOnce)
+    assert res[:2] == (1, 0), res                   # recuperata al secondo giro
+    assert ct.SECOND_PASS_PAUSE in pauses
+    # la parte non foil viene rifatta nello stesso giorno: le vendite stimate non cambiano
+    assert rows == expected, (rows, expected)
+    print("Secondo giro sulle espansioni fallite: ok")
 
 if __name__ == "__main__":
     main()

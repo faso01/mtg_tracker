@@ -51,7 +51,7 @@ jobs:
     outputs:
       fatto: ${{ steps.check.outputs.fatto }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Dati di oggi già pubblicati?
         id: check
         run: python archivio.py oggi-pubblicato
@@ -71,9 +71,9 @@ jobs:
       CARDTRADER_TOKEN: ${{ secrets.CARDTRADER_TOKEN }}
       PUBBLICA: ${{ github.event_name == 'schedule' || inputs.pubblica }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip

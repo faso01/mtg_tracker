@@ -53,6 +53,11 @@ di un avvio pianificato". Per seguire l'avanzamento, in PowerShell:
 
 Codice finale nel registro: 0 = tutto ok, 2 = alcune espansioni fallite, 1 = nessuna riuscita.
 
+Errori temporanei: i 503/429 vengono ritentati dopo 5, 10, 20 secondi; i blocchi 403 della
+protezione di CardTrader (pagina web al posto dei dati) dopo 1, 2 e 5 minuti, con un massimo di
+30 minuti di attese in tutta la raccolta. Le espansioni ancora fallite vengono riprovate in un
+secondo giro alla fine, dopo 2 minuti di pausa.
+
 **Mac / Linux** – `crontab -e` e aggiungi:
 ```
 0 6 * * * cd /percorso/cartella && python3 ct_collector.py >> collector.log 2>&1; python3 scryfall_sync.py >> collector.log 2>&1
