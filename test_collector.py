@@ -179,6 +179,7 @@ def main():
     test_archivio()
     test_blocco_403()
     test_secondo_giro()
+    test_orario_riserva()
 
     print("\nTUTTI I TEST SUPERATI")
 
@@ -465,6 +466,20 @@ def test_secondo_giro():
     # la parte non foil viene rifatta nello stesso giorno: le vendite stimate non cambiano
     assert rows == expected, (rows, expected)
     print("Secondo giro sulle espansioni fallite: ok")
+
+
+def test_orario_riserva():
+    import archivio
+    from datetime import datetime
+    calls = []
+    archivio.list_tags = lambda repo: calls.append("tags") or []
+    early = SimpleNamespace(repo="x", non_prima_delle=10)
+    assert archivio.cmd_oggi_pubblicato(early, datetime(2026, 11, 24, 1, 52)) is True
+    assert calls == []                              # nemmeno guarda GitHub
+    assert archivio.cmd_oggi_pubblicato(early, datetime(2026, 11, 24, 16, 5)) is False
+    manual = SimpleNamespace(repo="x", non_prima_delle=None)
+    assert archivio.cmd_oggi_pubblicato(manual, datetime(2026, 11, 24, 1, 52)) is False
+    print("Orari di riserva solo dalle 10: ok")
 
 if __name__ == "__main__":
     main()

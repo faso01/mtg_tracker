@@ -214,17 +214,30 @@ def cmd_pubblica(args):
     log(f"Pubblicati {len(files)} file di storico e lo stato.")
 
 
-def cmd_oggi_pubblicato(args):
-    """Scrive 'si' o 'no': i dati di oggi sono già nel repository? (usato da GitHub Actions)"""
-    from datetime import date
-    today = date.today().isoformat()
-    tag = f"storico-{today[:7]}"
-    found = tag in list_tags(args.repo) and f"daily_stats_{today}.csv.gz" in list_assets(args.repo, tag)
-    log(f"Dati del {today} già pubblicati: {'sì' if found else 'no'}")
+def cmd_oggi_pubblicato(args, now=None):
+    """Scrive fatto=true/false: la raccolta di oggi va saltata? (usato da GitHub Actions)
+    Con --non-prima-delle H, prima delle ore H si salta comunque: serve per gli orari di riserva
+    di GitHub, che arrivano con ore di ritardo e a volte dopo mezzanotte (24 novembre: raccolta
+    all'1:52). La raccolta deve partire sempre verso la stessa ora, così ogni giorno copre
+    circa 24 ore di vendite."""
+    from datetime import datetime
+    now = now or datetime.now()
+    today = now.date().isoformat()
+    early = args.non_prima_delle is not None and now.hour < args.non_prima_delle
+    if early:
+        log(f"Sono le {now:%H:%M}, prima delle {args.non_prima_delle}: "
+            f"raccolta rimandata all'avvio delle {args.non_prima_delle}")
+        skip = True
+    else:
+        tag = f"storico-{today[:7]}"
+        skip = (tag in list_tags(args.repo)
+                and f"daily_stats_{today}.csv.gz" in list_assets(args.repo, tag))
+        log(f"Dati del {today} già pubblicati: {'sì' if skip else 'no'}")
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
         with open(out, "a") as fh:
-            fh.write(f"fatto={'true' if found else 'false'}\n")
+            fh.write(f"fatto={'true' if skip else 'false'}\n")
+    return skip
 
 
 def cmd_aggiorna(args):
@@ -281,7 +294,9 @@ def main():
     p = sub.add_parser("pubblica", help="carica lo stato e lo storico")
     p.add_argument("--tutte-le-date", action="store_true",
                    help="carica tutti i giorni presenti nel database, non solo l'ultimo")
-    sub.add_parser("oggi-pubblicato", help="(Actions) controlla se i dati di oggi ci sono già")
+    o = sub.add_parser("oggi-pubblicato", help="(Actions) controlla se i dati di oggi ci sono già")
+    o.add_argument("--non-prima-delle", type=int, metavar="ORA",
+                   help="prima di quest'ora (locale) salta comunque la raccolta")
     a = sub.add_parser("aggiorna", help="(PC) scarica i dati e ricostruisce il database")
     a.add_argument("--dir", default=str(SCRIPT_DIR / "dati"),
                    help="cartella dove tenere i file scaricati")

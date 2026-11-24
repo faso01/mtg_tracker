@@ -54,7 +54,14 @@ jobs:
       - uses: actions/checkout@v5
       - name: Dati di oggi già pubblicati?
         id: check
-        run: python archivio.py oggi-pubblicato
+        # gli orari di riserva di GitHub raccolgono solo dalle 10 in poi (ora italiana):
+        # prima tocca all'avvio esterno, così la raccolta parte sempre alla stessa ora
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python archivio.py oggi-pubblicato --non-prima-delle 10
+          else
+            python archivio.py oggi-pubblicato
+          fi
 
   raccolta:
     needs: controllo
